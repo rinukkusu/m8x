@@ -135,8 +135,8 @@ fix before letting untrusted people write workflows.
 | --- | --- |
 | `DATABASE_URL` | Postgres connection string |
 | `M8X_ENCRYPTION_KEY` | base64 of 32 bytes; encrypts stored credentials |
-| `M8X_SESSION_SECRET` | session cookie secret |
 | `M8X_PUBLIC_URL` | used to build the webhook URLs shown in the editor |
+| `M8X_FORCE_SECURE_COOKIES` | set to `1` when TLS is terminated by a proxy that does not send `x-forwarded-proto` |
 | `M8X_WORKER_CONCURRENCY` | executions in flight per worker, default 5 |
 | `M8X_VAR_*` | exposed to workflows as `$env.*`; nothing else is |
 
@@ -163,3 +163,7 @@ a test is cheap.
   item came from.
 - **Schedules have minute resolution.** The scheduler ticks once a minute and
   claims what is due.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

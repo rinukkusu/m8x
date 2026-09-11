@@ -30,7 +30,6 @@ services:
     environment:
       DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD:-m8x}@postgres:5432/m8x?schema=public
       M8X_ENCRYPTION_KEY: ${M8X_ENCRYPTION_KEY}
-      M8X_SESSION_SECRET: ${M8X_SESSION_SECRET}
       M8X_PUBLIC_URL: ${M8X_PUBLIC_URL:-http://localhost:3000}
       NODE_ENV: production
     ports:
