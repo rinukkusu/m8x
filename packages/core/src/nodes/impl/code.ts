@@ -1,12 +1,9 @@
 import { NodeError, type Item, type NodeExecute } from '../../types.js';
 
 export const executeCode: NodeExecute = async (ctx) => {
-    const [{ spawn }, { fileURLToPath }] = await Promise.all([
-      import('node:child_process'),
-      import('node:url'),
-    ]);
+    const [{ spawn }] = await Promise.all([import('node:child_process')]);
 
-    const sandboxPath = fileURLToPath(new URL('./code-sandbox.mjs', import.meta.url));
+    const sandboxPath = await resolveSandboxPath();
     const source = ctx.getParam<string>('code') ?? '';
     const mode = ctx.getParam<string>('mode') ?? 'allItems';
     const timeoutMs = Number(ctx.getParam('timeoutMs') ?? 15000);
@@ -112,6 +109,56 @@ export const executeCode: NodeExecute = async (ctx) => {
   };
 
 
+
+/**
+ * Find the sandbox script on disk.
+ *
+ * The obvious `new URL('./code-sandbox.mjs', import.meta.url)` works when the
+ * worker runs from source, but not when this module has been bundled into the
+ * Next.js server for the single-container arrangement: there `import.meta.url`
+ * points inside the build output, where no such sibling file exists. The
+ * script has to be a real file because it is spawned as a separate process, so
+ * bundling cannot help. Hence a search, with an env override for anyone whose
+ * layout is neither of these.
+ */
+let cachedSandboxPath: string | null = null;
+
+async function resolveSandboxPath(): Promise<string> {
+  if (cachedSandboxPath) return cachedSandboxPath;
+
+  const [{ existsSync }, { fileURLToPath }, path] = await Promise.all([
+    import('node:fs'),
+    import('node:url'),
+    import('node:path'),
+  ]);
+
+  const candidates = [
+    process.env.M8X_CODE_SANDBOX_PATH,
+    safely(() => fileURLToPath(new URL('./code-sandbox.mjs', import.meta.url))),
+    path.join(process.cwd(), 'packages/core/src/nodes/impl/code-sandbox.mjs'),
+  ];
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      cachedSandboxPath = candidate;
+      return candidate;
+    }
+  }
+
+  throw new NodeError(
+    'SandboxError',
+    'Could not find the Code node sandbox script. Set M8X_CODE_SANDBOX_PATH to its location.',
+    { tried: candidates.filter(Boolean) },
+  );
+}
+
+function safely(resolve: () => string): string | undefined {
+  try {
+    return resolve();
+  } catch {
+    return undefined;
+  }
+}
 
 interface SandboxResponse {
   ok: boolean;

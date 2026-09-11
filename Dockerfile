@@ -67,6 +67,20 @@ COPY packages/core/prisma packages/core/prisma
 RUN npx prisma generate --schema packages/core/prisma/schema.prisma
 
 # ---------------------------------------------------------------------------
+# The Prisma CLI on its own, for images that need to apply a schema but do not
+# otherwise carry it. Installed into a separate prefix rather than cherry-picked
+# into the app's node_modules: the CLI pulls a long chain of transitive
+# dependencies, and picking them by hand fails one missing module at a time.
+#
+# The version is read from the lockfile so it cannot drift from the generated
+# client.
+# ---------------------------------------------------------------------------
+FROM node:22-alpine AS prisma-cli
+WORKDIR /opt/prisma
+COPY package-lock.json ./
+RUN PRISMA_VERSION=$(node -p "require('./package-lock.json').packages['node_modules/prisma'].version")  && rm package-lock.json  && npm init -y > /dev/null  && npm install --omit=dev --no-audit --no-fund "prisma@${PRISMA_VERSION}"
+
+# ---------------------------------------------------------------------------
 # Web: Next.js standalone output, which carries its own traced node_modules.
 # ---------------------------------------------------------------------------
 FROM node:22-alpine AS web
@@ -78,7 +92,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0
+    HOSTNAME=0.0.0.0 \
+    M8X_CODE_SANDBOX_PATH=/app/packages/core/src/nodes/impl/code-sandbox.mjs
 
 COPY --from=builder --chown=m8x:m8x /app/apps/web/.next/standalone ./
 COPY --from=builder --chown=m8x:m8x /app/apps/web/.next/static ./apps/web/.next/static
@@ -86,8 +101,18 @@ COPY --from=builder --chown=m8x:m8x /app/apps/web/.next/static ./apps/web/.next/
 # resolved at runtime rather than imported.
 COPY --from=builder --chown=m8x:m8x /app/node_modules/.prisma ./node_modules/.prisma
 
+# Needed only when M8X_RUN_WORKER_IN_WEB=1 turns this into a single-container
+# deployment: the Prisma CLI so the entrypoint can apply the schema, and the
+# Code node's sandbox, which has to exist as a real file because it is spawned
+# as a separate process and so cannot be bundled.
+COPY --from=prisma-cli --chown=m8x:m8x /opt/prisma /opt/prisma
+COPY --chown=m8x:m8x packages/core/prisma ./packages/core/prisma
+COPY --chown=m8x:m8x packages/core/src/nodes/impl/code-sandbox.mjs ./packages/core/src/nodes/impl/code-sandbox.mjs
+COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/m8x-entrypoint
+
 USER m8x
 EXPOSE 3000
+ENTRYPOINT ["m8x-entrypoint"]
 CMD ["node", "apps/web/server.js"]
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,12 @@
+# Normalise to LF in the repository. Without this, a Windows checkout writes
+# CRLF into shell scripts, and a CRLF shebang makes the kernel look for an
+# interpreter named "/bin/sh\r". The container then fails to start with a
+# "no such file or directory" that names a file which plainly exists.
+* text=auto eol=lf
+
+# Binary-ish files that must never be touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

@@ -87,6 +87,31 @@ Migrations live in the worker image rather than in both, so exactly one
 container touches the schema and two of them cannot race to run DDL against the
 same database.
 
+### One container instead of two
+
+The worker can run inside the web server rather than beside it. One container,
+one thing to deploy:
+
+```bash
+docker run -d --name m8x -p 3000:3000   -e DATABASE_URL="postgresql://user:pass@your-db:5432/m8x?schema=public"   -e M8X_ENCRYPTION_KEY="..."   -e M8X_RUN_WORKER_IN_WEB=1   ghcr.io/rinukkusu/m8x-web
+```
+
+It is the same execution loop either way, started from Next's instrumentation
+hook instead of from its own process, so the two arrangements cannot drift
+apart. The container also applies the schema on boot, since in this shape it is
+the only container there is.
+
+What you give up, in the order it will bother you:
+
+- **Deploying kills in-flight runs.** Restarting to ship a UI change terminates
+  any workflow mid-execution.
+- **A runaway workflow takes the UI with it.** One process means one memory
+  limit, so you lose the screen you would use to find out what happened.
+- **You cannot scale the two separately.** Two web replicas means two workers.
+
+For one team on one box that is usually a fair trade. For anything where a
+failed run costs something, run the two containers.
+
 ### Running it locally instead
 
 Postgres in Docker, the rest on the host:
@@ -177,7 +202,9 @@ fix before letting untrusted people write workflows.
 | `M8X_FORCE_SECURE_COOKIES` | set to `1` when TLS is terminated by a proxy that does not send `x-forwarded-proto` |
 | `M8X_WORKER_CONCURRENCY` | executions in flight per worker, default 5 |
 | `M8X_VAR_*` | exposed to workflows as `$env.*`; nothing else is |
-| `M8X_AUTO_MIGRATE` | worker only; set to `0` to skip applying the schema on boot |
+| `M8X_AUTO_MIGRATE` | set to `0` to skip applying the schema on boot |
+| `M8X_RUN_WORKER_IN_WEB` | set to `1` to run the worker inside the web server |
+| `M8X_CODE_SANDBOX_PATH` | override for the Code node's sandbox script; both images set it already |
 
 ## Images
 
