@@ -29,11 +29,22 @@ Everything runs in Docker:
 cp .env.example .env
 ```
 
-Generate an encryption key and put it in `.env` as `M8X_ENCRYPTION_KEY`:
+Fill in the two secrets it asks for. A database password:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(18).toString('base64url'))"
+```
+
+And the key that encrypts stored credentials:
 
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+Put the password in both `POSTGRES_PASSWORD` and the `DATABASE_URL`, and the
+key in `M8X_ENCRYPTION_KEY`. Compose refuses to start without the password
+rather than falling back to a default, because a default password is what
+actually ends up running.
 
 Then bring the stack up:
 
@@ -133,7 +144,8 @@ fix before letting untrusted people write workflows.
 
 | Variable | Purpose |
 | --- | --- |
-| `DATABASE_URL` | Postgres connection string |
+| `POSTGRES_PASSWORD` | Postgres password; compose will not start without it |
+| `DATABASE_URL` | Postgres connection string, using that same password |
 | `M8X_ENCRYPTION_KEY` | base64 of 32 bytes; encrypts stored credentials |
 | `M8X_PUBLIC_URL` | used to build the webhook URLs shown in the editor |
 | `M8X_FORCE_SECURE_COOKIES` | set to `1` when TLS is terminated by a proxy that does not send `x-forwarded-proto` |

@@ -4,12 +4,14 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: m8x
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-m8x}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: m8x
     volumes:
       - m8x-data:/var/lib/postgresql/data
     ports:
-      - '5432:5432'
+      # Bound to loopback: the containers reach Postgres over the compose
+      # network, and only local dev processes need the published port.
+      - '127.0.0.1:5432:5432'
     healthcheck:
       # The app and the worker both wait on this, so it has to check that the
       # database actually accepts queries, not just that the port is open.
@@ -28,7 +30,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD:-m8x}@postgres:5432/m8x?schema=public
+      DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD}@postgres:5432/m8x?schema=public
       M8X_ENCRYPTION_KEY: ${M8X_ENCRYPTION_KEY}
       M8X_PUBLIC_URL: ${M8X_PUBLIC_URL:-http://localhost:3000}
       NODE_ENV: production
@@ -45,7 +47,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD:-m8x}@postgres:5432/m8x?schema=public
+      DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD}@postgres:5432/m8x?schema=public
       M8X_ENCRYPTION_KEY: ${M8X_ENCRYPTION_KEY}
       M8X_PUBLIC_URL: ${M8X_PUBLIC_URL:-http://localhost:3000}
       M8X_WORKER_CONCURRENCY: ${M8X_WORKER_CONCURRENCY:-5}
