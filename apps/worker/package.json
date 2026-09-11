@@ -10,11 +10,11 @@
   },
   "dependencies": {
     "@m8x/core": "*",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.1",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
 }

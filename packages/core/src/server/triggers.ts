@@ -1,4 +1,9 @@
-import { CronExpressionParser } from 'cron-parser';
+// Pinned to the same major that pg-boss depends on, deliberately. Version 5
+// renamed this API, and running both meant npm had to nest one copy inside
+// packages/core. That nesting is easy to lose when assembling a container
+// image, and when it is lost the worker dies at startup on a missing export.
+// One version in the tree removes the failure mode and shrinks the install.
+import cronParser from 'cron-parser';
 
 import type { Graph } from '../types.js';
 import { prisma } from './db.js';
@@ -132,7 +137,7 @@ export function computeNextRun(config: Record<string, unknown> | unknown, from: 
 
   try {
     const tz = typeof params.timezone === 'string' && params.timezone.trim() !== '' ? params.timezone.trim() : 'UTC';
-    return CronExpressionParser.parse(expression, { currentDate: from, tz }).next().toDate();
+    return cronParser.parseExpression(expression, { currentDate: from, tz }).next().toDate();
   } catch {
     // A bad cron expression disables the schedule rather than crashing the
     // tick. The workflow's activation check surfaces it to the author.
@@ -142,7 +147,7 @@ export function computeNextRun(config: Record<string, unknown> | unknown, from: 
 
 export function isValidCron(expression: string, timezone = 'UTC'): boolean {
   try {
-    CronExpressionParser.parse(expression, { tz: timezone });
+    cronParser.parseExpression(expression, { tz: timezone });
     return true;
   } catch {
     return false;

@@ -61,6 +61,32 @@ docker compose exec web npm run db:seed
 The app is at http://localhost:3000. Sign in with the values of
 `M8X_SEED_EMAIL` and `M8X_SEED_PASSWORD`.
 
+### Running against your own Postgres, without compose
+
+Compose is a convenience, not a requirement. The images work on their own
+against an existing database:
+
+```bash
+docker run -d --name m8x-worker   -e DATABASE_URL="postgresql://user:pass@your-db:5432/m8x?schema=public"   -e M8X_ENCRYPTION_KEY="..."   ghcr.io/rinukkusu/m8x-worker
+```
+
+```bash
+docker run -d --name m8x-web -p 3000:3000   -e DATABASE_URL="postgresql://user:pass@your-db:5432/m8x?schema=public"   -e M8X_ENCRYPTION_KEY="..."   -e M8X_PUBLIC_URL="https://m8x.example.com"   ghcr.io/rinukkusu/m8x-web
+```
+
+The worker applies the schema on startup, so nothing has to run migrations for
+you. Start it first, or expect the web app to serve a few failed queries until
+the schema exists. Set `M8X_AUTO_MIGRATE=0` if your deploy pipeline would
+rather own that, and apply the schema yourself with:
+
+```bash
+docker run --rm -e DATABASE_URL="..." ghcr.io/rinukkusu/m8x-worker   npx prisma db push --schema packages/core/prisma/schema.prisma
+```
+
+Migrations live in the worker image rather than in both, so exactly one
+container touches the schema and two of them cannot race to run DDL against the
+same database.
+
 ### Running it locally instead
 
 Postgres in Docker, the rest on the host:
@@ -151,6 +177,7 @@ fix before letting untrusted people write workflows.
 | `M8X_FORCE_SECURE_COOKIES` | set to `1` when TLS is terminated by a proxy that does not send `x-forwarded-proto` |
 | `M8X_WORKER_CONCURRENCY` | executions in flight per worker, default 5 |
 | `M8X_VAR_*` | exposed to workflows as `$env.*`; nothing else is |
+| `M8X_AUTO_MIGRATE` | worker only; set to `0` to skip applying the schema on boot |
 
 ## Images
 

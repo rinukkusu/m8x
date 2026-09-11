@@ -26,9 +26,13 @@ services:
       dockerfile: Dockerfile
       target: web
     restart: unless-stopped
+    # The worker applies the schema on boot, so it goes first. Web does not
+    # wait for the migration to finish: if it wins the race it serves a couple
+    # of failed queries and recovers, which beats adding a healthcheck whose
+    # only job is ordering.
     depends_on:
-      postgres:
-        condition: service_healthy
+      worker:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD}@postgres:5432/m8x?schema=public
       M8X_ENCRYPTION_KEY: ${M8X_ENCRYPTION_KEY}
