@@ -1,0 +1,24 @@
+{
+  "name": "m8x",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @m8x/core && npm run build -w @m8x/worker && npm run build -w @m8x/web",
+    "dev:web": "npm run dev -w @m8x/web",
+    "dev:worker": "npm run dev -w @m8x/worker",
+    "db:generate": "npm run db:generate -w @m8x/core",
+    "db:push": "npm run db:push -w @m8x/core",
+    "db:migrate": "npm run db:migrate -w @m8x/core",
+    "db:seed": "npm run db:seed -w @m8x/core",
+    "test": "npm run test -w @m8x/core",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

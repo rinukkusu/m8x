@@ -1,0 +1,245 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Auth (deliberately minimal: single team, no orgs, no RBAC)
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Folders
+//
+// `path` is a materialised path of ancestor ids, e.g. "/cuid_a/cuid_b/".
+// Listing a whole subtree is then `where path startsWith "<parent.path><id>/"`,
+// which is one indexed query instead of a recursive CTE on every render.
+// It must be rewritten for the subtree whenever a folder moves.
+// ---------------------------------------------------------------------------
+
+model Folder {
+  id        String     @id @default(cuid())
+  name      String
+  parentId  String?
+  parent    Folder?    @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]   @relation("FolderTree")
+  path      String     @default("/")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  workflows Workflow[]
+
+  @@unique([parentId, name])
+  @@index([path])
+}
+
+// ---------------------------------------------------------------------------
+// Workflows
+// ---------------------------------------------------------------------------
+
+model Workflow {
+  id               String            @id @default(cuid())
+  name             String
+  folderId         String?
+  folder           Folder?           @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  active           Boolean           @default(false)
+  // Working copy of the graph. Saved runs point at a WorkflowVersion instead,
+  // so history stays readable after the workflow is edited.
+  graph            Json
+  currentVersionId String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  versions   WorkflowVersion[]
+  executions Execution[]
+  triggers   Trigger[]
+
+  @@index([folderId])
+  @@index([active])
+}
+
+model WorkflowVersion {
+  id         String      @id @default(cuid())
+  workflowId String
+  workflow   Workflow    @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  version    Int
+  graph      Json
+  createdAt  DateTime    @default(now())
+  executions Execution[]
+
+  @@unique([workflowId, version])
+  @@index([workflowId])
+}
+
+// ---------------------------------------------------------------------------
+// Triggers
+// ---------------------------------------------------------------------------
+
+enum TriggerKind {
+  webhook
+  schedule
+}
+
+model Trigger {
+  id          String      @id @default(cuid())
+  workflowId  String
+  workflow    Workflow    @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  // Graph node id this trigger belongs to.
+  nodeId      String
+  kind        TriggerKind
+  config      Json
+  // Only set for kind = webhook. The path segment after /api/webhooks/.
+  webhookPath String?     @unique
+  enabled     Boolean     @default(true)
+
+  // Only set for kind = schedule. The scheduler ticks once a minute and claims
+  // every trigger whose nextRunAt has passed, so due times survive a restart
+  // and a second worker cannot double-fire one.
+  nextRunAt DateTime?
+  lastRunAt DateTime?
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([workflowId, nodeId])
+  @@index([workflowId])
+  @@index([kind, enabled, nextRunAt])
+}
+
+// ---------------------------------------------------------------------------
+// Executions
+//
+// The failure columns are denormalised on purpose. The failures view filters
+// and groups by them constantly, and digging into NodeRun for every row would
+// make that page slow at exactly the volume where it becomes useful.
+// ---------------------------------------------------------------------------
+
+enum ExecutionStatus {
+  queued
+  running
+  success
+  failed
+  cancelled
+}
+
+enum TriggerSource {
+  manual
+  webhook
+  schedule
+  retry
+}
+
+model Execution {
+  id                String          @id @default(cuid())
+  workflowId        String
+  workflow          Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  workflowVersionId String?
+  workflowVersion   WorkflowVersion? @relation(fields: [workflowVersionId], references: [id], onDelete: SetNull)
+
+  status  ExecutionStatus @default(queued)
+  trigger TriggerSource
+
+  // Items handed to the trigger node, e.g. the webhook request payload.
+  input Json?
+
+  queuedAt   DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  durationMs Int?
+
+  // Failure summary, mirrored from the NodeRun that threw.
+  errorNodeId      String?
+  errorNodeName    String?
+  errorType        String?
+  errorMessage     String?
+  // Hash of (node type, error type, normalised message). Grouping by this is
+  // what turns a wall of failures into a short list of distinct problems.
+  errorFingerprint String?
+
+  // Set when this execution is a retry of another one.
+  retryOfId String?
+  retryOf   Execution?  @relation("ExecutionRetry", fields: [retryOfId], references: [id], onDelete: SetNull)
+  retries   Execution[] @relation("ExecutionRetry")
+
+  nodeRuns NodeRun[]
+
+  @@index([workflowId, queuedAt(sort: Desc)])
+  @@index([status, queuedAt(sort: Desc)])
+  @@index([errorFingerprint, queuedAt(sort: Desc)])
+  @@index([queuedAt(sort: Desc)])
+}
+
+enum NodeRunStatus {
+  running
+  success
+  failed
+  skipped
+}
+
+model NodeRun {
+  id          String        @id @default(cuid())
+  executionId String
+  execution   Execution     @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  nodeId   String
+  nodeName String
+  nodeType String
+  status   NodeRunStatus
+  // 1 for the first try. Each retry gets its own row.
+  attempt  Int           @default(1)
+  // Order the runner reached this node in, for stable display.
+  sequence Int
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  durationMs Int?
+
+  // The actual items in and out. This is what makes the execution detail view
+  // worth opening. Both are truncated past a size cap.
+  input          Json?
+  output         Json?
+  inputTruncated  Boolean @default(false)
+  outputTruncated Boolean @default(false)
+
+  error Json?
+
+  @@index([executionId, sequence])
+  @@index([nodeType, status])
+}
+
+// ---------------------------------------------------------------------------
+// Credentials
+// ---------------------------------------------------------------------------
+
+model Credential {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  type      String
+  // AES-256-GCM ciphertext. Only ever decrypted inside the worker.
+  data      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type])
+}

@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: m8x
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-m8x}
+      POSTGRES_DB: m8x
+    volumes:
+      - m8x-data:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+    healthcheck:
+      # The app and the worker both wait on this, so it has to check that the
+      # database actually accepts queries, not just that the port is open.
+      test: ['CMD-SHELL', 'pg_isready -U m8x -d m8x']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: web
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD:-m8x}@postgres:5432/m8x?schema=public
+      M8X_ENCRYPTION_KEY: ${M8X_ENCRYPTION_KEY}
+      M8X_SESSION_SECRET: ${M8X_SESSION_SECRET}
+      M8X_PUBLIC_URL: ${M8X_PUBLIC_URL:-http://localhost:3000}
+      NODE_ENV: production
+    ports:
+      - '3000:3000'
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://m8x:${POSTGRES_PASSWORD:-m8x}@postgres:5432/m8x?schema=public
+      M8X_ENCRYPTION_KEY: ${M8X_ENCRYPTION_KEY}
+      M8X_PUBLIC_URL: ${M8X_PUBLIC_URL:-http://localhost:3000}
+      M8X_WORKER_CONCURRENCY: ${M8X_WORKER_CONCURRENCY:-5}
+      NODE_ENV: production
+
+volumes:
+  m8x-data:

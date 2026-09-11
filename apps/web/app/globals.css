@@ -1,0 +1,103 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/style.css';
+
+/*
+ * One dark palette rather than a theme switcher. A tool people stare at for an
+ * hour reading execution logs is better served by committing to a single
+ * well-tuned surface than by maintaining two mediocre ones.
+ */
+@theme {
+  --color-surface-0: #0b0d12;
+  --color-surface-1: #12151d;
+  --color-surface-2: #181c26;
+  --color-surface-3: #222734;
+
+  --color-line: #2a3040;
+  --color-line-strong: #3a4356;
+
+  --color-ink: #e7eaf0;
+  --color-ink-muted: #99a1b3;
+  --color-ink-faint: #6b7385;
+
+  --color-accent: #6366f1;
+  --color-accent-soft: #818cf8;
+
+  --color-ok: #22c55e;
+  --color-warn: #f59e0b;
+  --color-bad: #ef4444;
+  --color-info: #0ea5e9;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-surface-0);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--color-line);
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+
+/* Scrollbars, because half this app is long lists. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 6px;
+  border: 2px solid var(--color-surface-0);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-line-strong);
+}
+
+/* React Flow needs its surface colours pulled into the palette. */
+.react-flow {
+  --xy-background-color: var(--color-surface-0);
+  --xy-edge-stroke-default: var(--color-line-strong);
+  --xy-edge-stroke-selected-default: var(--color-accent-soft);
+  --xy-connectionline-stroke-default: var(--color-accent);
+  --xy-handle-background-color-default: var(--color-surface-3);
+  --xy-handle-border-color-default: var(--color-line-strong);
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__controls-button {
+  background: var(--color-surface-2);
+  border-color: var(--color-line);
+  fill: var(--color-ink-muted);
+}
+.react-flow__controls-button:hover {
+  background: var(--color-surface-3);
+}
+
+@utility card {
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-line);
+  border-radius: 0.75rem;
+}
+
+@utility focus-ring {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
