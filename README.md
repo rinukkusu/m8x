@@ -152,6 +152,20 @@ fix before letting untrusted people write workflows.
 | `M8X_WORKER_CONCURRENCY` | executions in flight per worker, default 5 |
 | `M8X_VAR_*` | exposed to workflows as `$env.*`; nothing else is |
 
+## Images
+
+Pushes to `main` publish two images to the GitHub Container Registry:
+
+```
+ghcr.io/rinukkusu/m8x-web
+ghcr.io/rinukkusu/m8x-worker
+```
+
+Both come from the same Dockerfile, which has a `web` and a `worker` target
+over a shared base. Tags are `latest` on the default branch, the full commit
+SHA on every push, and semver on `v*` tags. Pull requests build both images but
+publish neither.
+
 ## Tests
 
 ```bash
