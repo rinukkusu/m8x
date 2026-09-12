@@ -147,7 +147,7 @@ async function runClaimedExecution(
   executionId: string,
   log: (message: string) => void,
   options: InlineOptions = {},
-): Promise<RunResult | null> {
+): Promise<{ result: RunResult; graph: Graph } | null> {
   const execution = await prisma.execution.findUnique({
     where: { id: executionId },
     include: { workflowVersion: true },
@@ -201,7 +201,7 @@ async function runClaimedExecution(
     await finishExecution(executionId, result);
 
     log(`[worker] ${executionId} ${result.status === 'success' ? 'ok' : result.status} in ${result.durationMs}ms`);
-    return result;
+    return { result, graph };
   } catch (error) {
     await recorder.flush().catch(() => {});
     await failExecution(executionId, error);
@@ -254,33 +254,23 @@ async function runSubWorkflow(
     throw new NodeError('SubWorkflowError', 'The sub-workflow run was claimed by something else.');
   }
 
-  const result = await runClaimedExecution(executionId, log, {
+  const run = await runClaimedExecution(executionId, log, {
     signal: request.signal,
     depth: request.depth - 1,
     stack: request.stack,
   });
 
-  if (!result) {
+  if (!run) {
     return { executionId, status: 'failed', items: [], workflowName: workflow.name };
   }
 
-  const graph = await graphOf(executionId);
-
   return {
     executionId,
-    status: result.status,
-    items: graph ? terminalOutputs(graph, result.outputs) : [],
+    status: run.result.status,
+    items: terminalOutputs(run.graph, run.result.outputs),
     workflowName: workflow.name,
-    failure: result.failure,
+    failure: run.result.failure,
   };
-}
-
-async function graphOf(executionId: string): Promise<Graph | null> {
-  const execution = await prisma.execution.findUnique({
-    where: { id: executionId },
-    select: { workflowVersion: { select: { graph: true } } },
-  });
-  return (execution?.workflowVersion?.graph ?? null) as Graph | null;
 }
 
 /**
