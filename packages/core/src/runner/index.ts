@@ -2,7 +2,7 @@ import { resolveValue, type ExpressionScope } from '../expressions.js';
 import { describeError, errorFingerprint, type ExtractedError } from '../fingerprint.js';
 import { indexGraph, topologicalOrder, validateGraph } from '../graph.js';
 import { requireNodeDefinition } from '../nodes/executors.js';
-import { isParamVisible, paramUsesExpressions, validateParams } from '../nodes/index.js';
+import { isParamVisible, paramUsesExpressions, resolveOutputs, validateParams } from '../nodes/index.js';
 import {
   NodeError,
   type Graph,
@@ -233,7 +233,7 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       if (!node.continueOnFail) {
         return { status: 'failed', failure, outputs, durationMs: Date.now() - startedAt };
       }
-      outputs[node.id] = errorOutput(definition, { errorType: 'ConfigurationError', message });
+      outputs[node.id] = errorOutput(definition, node, { errorType: 'ConfigurationError', message });
       continue;
     }
 
@@ -258,7 +258,7 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
     }
 
     if (node.continueOnFail) {
-      outputs[node.id] = errorOutput(definition, attempt.error);
+      outputs[node.id] = errorOutput(definition, node, attempt.error);
       continue;
     }
 
@@ -318,7 +318,7 @@ async function runNodeWithRetries(args: RunNodeArgs): Promise<NodeAttempt> {
 
     try {
       const raw = await definition.execute(buildContext(args));
-      const output = normaliseOutput(raw, definition);
+      const output = normaliseOutput(raw, resolveOutputs(definition, node.params));
 
       await ctx.emit({
         type: 'nodeFinish',
@@ -523,16 +523,16 @@ function gatherInput(
 }
 
 /** Pad or trim what a node returned so it always matches its declared outputs. */
-function normaliseOutput(raw: NodeOutput, definition: NodeDefinition): Item[][] {
+function normaliseOutput(raw: NodeOutput, outputs: string[]): Item[][] {
   const branches: Item[][] = [];
-  for (let i = 0; i < definition.outputs.length; i++) {
+  for (let i = 0; i < outputs.length; i++) {
     branches.push(raw[i] ?? []);
   }
   return branches;
 }
 
-function errorOutput(definition: NodeDefinition, error: ExtractedError): Item[][] {
-  const branches: Item[][] = definition.outputs.map(() => []);
+function errorOutput(definition: NodeDefinition, node: GraphNode, error: ExtractedError): Item[][] {
+  const branches: Item[][] = resolveOutputs(definition, node.params).map(() => []);
   // continueOnFail still has to produce something, otherwise downstream nodes
   // cannot react to the failure. The error lands on the first branch.
   branches[0] = [{ json: { error: { type: error.errorType, message: error.message } } }];

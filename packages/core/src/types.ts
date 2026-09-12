@@ -65,6 +65,9 @@ export interface ParamSchema {
   expression?: boolean;
   /** Name of a credential type this parameter selects. */
   credentialType?: string;
+  /** Column placeholders for type 'keyValue'. Default to "name" and "value". */
+  keyPlaceholder?: string;
+  valuePlaceholder?: string;
 }
 
 export type NodeGroup = 'trigger' | 'action' | 'flow';
@@ -123,6 +126,13 @@ export interface NodeDescriptor {
   inputs: number;
   /** Labels for each output branch. A plain node has one unnamed branch. */
   outputs: string[];
+  /**
+   * Name of a `keyValue` parameter whose rows define the output branches, for a
+   * node like Switch whose branch count is up to its author. `outputs` is then
+   * the fallback for a node that has not been configured yet. Read it through
+   * `resolveOutputs`, never directly.
+   */
+  outputsFrom?: string;
   params: ParamSchema[];
   /** Default retry policy, overridable per node instance. */
   defaultRetries?: number;

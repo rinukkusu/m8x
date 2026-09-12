@@ -5,8 +5,9 @@ import { evaluateExpression, resolveValue, type ExpressionScope } from '../expre
 import { errorFingerprint, normaliseErrorMessage } from '../fingerprint.js';
 import { findCycle, topologicalOrder } from '../graph.js';
 import { compare } from '../nodes/conditions.js';
+import { resolveOutputs } from '../nodes/index.js';
 import { resolveTimeout } from '../nodes/params.js';
-import type { Graph, GraphEdge, GraphNode, Item } from '../types.js';
+import type { Graph, GraphEdge, GraphNode, Item, NodeDescriptor } from '../types.js';
 import { isRetryable, runWorkflow, type RunEvent } from './index.js';
 
 // ---------------------------------------------------------------------------
@@ -153,6 +154,46 @@ test('unknown variables are named in the error', () => {
 test('expressions resolve inside nested objects and arrays', () => {
   const value = { list: ['{{ $json.a }}', 'literal'], nested: { x: '{{ $json.a }}' } };
   assert.deepEqual(resolveValue(value, scope({ a: 7 })), { list: [7, 'literal'], nested: { x: 7 } });
+});
+
+// ---------------------------------------------------------------------------
+// Output branches
+// ---------------------------------------------------------------------------
+
+const branching: NodeDescriptor = {
+  type: 'test.branching',
+  displayName: 'Branching',
+  description: 'A node whose branches follow its rules.',
+  group: 'flow',
+  icon: 'GitBranch',
+  color: '#000000',
+  inputs: 1,
+  outputs: ['unconfigured'],
+  outputsFrom: 'rules',
+  params: [],
+};
+
+test('branch labels come from the rules that define them', () => {
+  assert.deepEqual(
+    resolveOutputs(branching, { rules: [{ key: 'paid', value: '' }, { key: 'refunded', value: '' }] }),
+    ['paid', 'refunded'],
+  );
+});
+
+test('a rule with no label still gets a branch, so the wiring survives', () => {
+  assert.deepEqual(resolveOutputs(branching, { rules: [{ key: '', value: '' }] }), ['Branch 1']);
+});
+
+test('an unconfigured node falls back to its declared outputs', () => {
+  assert.deepEqual(resolveOutputs(branching, {}), ['unconfigured']);
+  assert.deepEqual(resolveOutputs(branching, { rules: [] }), ['unconfigured']);
+});
+
+test('the fallback branch is appended last', () => {
+  assert.deepEqual(
+    resolveOutputs(branching, { rules: [{ key: 'paid', value: '' }], fallback: true }),
+    ['paid', 'fallback'],
+  );
 });
 
 // ---------------------------------------------------------------------------

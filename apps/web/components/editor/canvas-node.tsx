@@ -1,6 +1,6 @@
 'use client';
 
-import { getNodeDescriptor, type GraphNode } from '@m8x/core';
+import { getNodeDescriptor, resolveOutputs, type GraphNode } from '@m8x/core';
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import * as icons from 'lucide-react';
 
@@ -36,7 +36,7 @@ export function CanvasNodeView({ data, selected }: NodeProps<CanvasNode>) {
   const definition = getNodeDescriptor(node.type);
 
   const Icon = (definition && (icons as unknown as Record<string, icons.LucideIcon>)[definition.icon]) || icons.Box;
-  const outputs = definition?.outputs ?? [''];
+  const outputs = definition ? resolveOutputs(definition, node.params) : [''];
   const inputs = definition?.inputs ?? 1;
 
   return (
@@ -56,7 +56,7 @@ export function CanvasNodeView({ data, selected }: NodeProps<CanvasNode>) {
           id={String(index)}
           // Two-input nodes get their handles spread apart so it is obvious
           // which branch is which without hovering.
-          style={inputs > 1 ? { top: `${35 + index * 30}%` } : undefined}
+          style={inputs > 1 ? { top: spread(index, inputs) } : undefined}
           className="!size-2.5 !border-line-strong !bg-surface-3"
         />
       ))}
@@ -87,7 +87,7 @@ export function CanvasNodeView({ data, selected }: NodeProps<CanvasNode>) {
           type="source"
           position={Position.Right}
           id={String(index)}
-          style={outputs.length > 1 ? { top: `${35 + index * 30}%` } : undefined}
+          style={outputs.length > 1 ? { top: spread(index, outputs.length) } : undefined}
           className="!size-2.5 !border-line-strong !bg-surface-3"
         >
           {label ? (
@@ -99,4 +99,14 @@ export function CanvasNodeView({ data, selected }: NodeProps<CanvasNode>) {
       ))}
     </div>
   );
+}
+
+/**
+ * Where the nth of `total` handles sits down the side of the node.
+ *
+ * Evenly spaced rather than a fixed step, so a Switch with six rules keeps every
+ * handle on the node instead of walking off the bottom of it.
+ */
+function spread(index: number, total: number): string {
+  return `${((index + 1) / (total + 1)) * 100}%`;
 }

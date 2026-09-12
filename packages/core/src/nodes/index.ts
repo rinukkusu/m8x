@@ -38,6 +38,33 @@ export function isParamVisible(schema: ParamSchema, params: Record<string, unkno
   return Object.entries(schema.showIf).every(([name, allowed]) => allowed.includes(params[name]));
 }
 
+/**
+ * The output branches a node actually has, which for a Switch depends on how
+ * many rules its author wrote.
+ *
+ * The canvas draws handles from this and the runner pads its output to it, so
+ * the two can never disagree about how many branches exist — the same reason
+ * `isParamVisible` is shared rather than reimplemented on each side.
+ */
+export function resolveOutputs(
+  descriptor: NodeDescriptor,
+  params: Record<string, unknown>,
+): string[] {
+  if (!descriptor.outputsFrom) return descriptor.outputs;
+
+  const rows = params[descriptor.outputsFrom];
+  if (!Array.isArray(rows)) return descriptor.outputs;
+
+  const labels = rows.map((row, index) => {
+    const key = (row as { key?: unknown } | null)?.key;
+    return typeof key === 'string' && key.trim() !== '' ? key.trim() : `Branch ${index + 1}`;
+  });
+
+  if (labels.length === 0) return descriptor.outputs;
+  if (params.fallback === true) labels.push('fallback');
+  return labels;
+}
+
 /** Whether `{{ }}` templates are resolved for this parameter. */
 export function paramUsesExpressions(schema: ParamSchema): boolean {
   if (schema.expression !== undefined) return schema.expression;

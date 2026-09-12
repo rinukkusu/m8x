@@ -172,13 +172,13 @@ function KeyValueList({
         <div key={index} className="flex items-center gap-1.5">
           <Input
             value={row.key ?? ''}
-            placeholder="name"
+            placeholder={schema.keyPlaceholder ?? 'name'}
             onChange={(event) => update(index, { key: event.target.value })}
             className="w-2/5"
           />
           <Input
             value={String(row.value ?? '')}
-            placeholder="value"
+            placeholder={schema.valuePlaceholder ?? 'value'}
             onChange={(event) => update(index, { value: event.target.value })}
           />
           <Button
