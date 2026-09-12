@@ -383,6 +383,256 @@ test('Merge combines two inputs by a matching field', async () => {
   assert.equal(merged?.b, 'y');
 });
 
+test('Switch sends each item down the first branch that matches', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', {
+        rules: [
+          { key: 'big', value: '{{ $json.n > 10 }}' },
+          { key: 'small', value: '{{ $json.n > 0 }}' },
+        ],
+      }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 50 } }, { json: { n: 5 } }, { json: { n: -1 } }]);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.switch?.[0]?.length, 1);
+  // 5 matches the second rule only; 50 matches both but stops at the first.
+  assert.equal(result.outputs.switch?.[1]?.[0]?.json.n, 5);
+  // Nothing matched -1 and there is no fallback branch, so it is dropped.
+  assert.equal(result.outputs.switch?.length, 2);
+});
+
+test('Switch can send an item to every matching branch', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', {
+        allMatches: true,
+        rules: [
+          { key: 'big', value: '{{ $json.n > 10 }}' },
+          { key: 'positive', value: '{{ $json.n > 0 }}' },
+        ],
+      }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 50 } }]);
+  assert.equal(result.outputs.switch?.[0]?.length, 1);
+  assert.equal(result.outputs.switch?.[1]?.length, 1);
+});
+
+test('the Switch fallback branch collects what nothing matched', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', {
+        fallback: true,
+        rules: [{ key: 'paid', value: '{{ $json.status === "paid" }}' }],
+      }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { status: 'refunded' } }]);
+  assert.equal(result.outputs.switch?.[0]?.length, 0);
+  assert.equal(result.outputs.switch?.[1]?.[0]?.json.status, 'refunded');
+});
+
+test('a Switch rule resolving to the string "false" does not match', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', { fallback: true, rules: [{ key: 'yes', value: '{{ $json.flag }}' }] }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { flag: 'false' } }]);
+  assert.equal(result.outputs.switch?.[0]?.length, 0);
+  assert.equal(result.outputs.switch?.[1]?.length, 1);
+});
+
+test('Limit keeps the end of the list when asked to', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('limit', 'flow.limit', { maxItems: 2, keep: 'last' })],
+    edges: [edge('trigger', 'limit')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 1 } }, { json: { n: 2 } }, { json: { n: 3 } }]);
+  assert.deepEqual(result.outputs.limit?.[0]?.map((item) => item.json.n), [2, 3]);
+});
+
+test('Sort orders by several fields, the first breaking ties last', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('sort', 'flow.sort', {
+        mode: 'fields',
+        fields: [{ key: 'group', value: 'asc' }, { key: 'score', value: 'desc' }],
+      }),
+    ],
+    edges: [edge('trigger', 'sort')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { group: 'b', score: 1 } },
+    { json: { group: 'a', score: 1 } },
+    { json: { group: 'a', score: 9 } },
+  ]);
+
+  assert.deepEqual(
+    result.outputs.sort?.[0]?.map((item) => `${item.json.group}${item.json.score}`),
+    ['a9', 'a1', 'b1'],
+  );
+});
+
+test('Sort compares numbers as numbers, not as text', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('sort', 'flow.sort', { mode: 'fields', fields: [{ key: 'n', value: 'asc' }] })],
+    edges: [edge('trigger', 'sort')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 10 } }, { json: { n: 9 } }, { json: { n: 100 } }]);
+  assert.deepEqual(result.outputs.sort?.[0]?.map((item) => item.json.n), [9, 10, 100]);
+});
+
+test('Remove Duplicates ignores the order the fields were written in', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('dedupe', 'flow.removeDuplicates', {})],
+    edges: [edge('trigger', 'dedupe')],
+  };
+
+  const { result } = await run(graph, [{ json: { a: 1, b: 2 } }, { json: { b: 2, a: 1 } }]);
+  assert.equal(result.outputs.dedupe?.[0]?.length, 1);
+});
+
+test('Remove Duplicates can compare named fields only', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('dedupe', 'flow.removeDuplicates', { mode: 'fields', fields: 'email' }),
+    ],
+    edges: [edge('trigger', 'dedupe')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { email: 'a@example.com', seen: 1 } },
+    { json: { email: 'a@example.com', seen: 2 } },
+    { json: { email: 'b@example.com', seen: 3 } },
+  ]);
+  assert.equal(result.outputs.dedupe?.[0]?.length, 2);
+  // The first occurrence is the one that survives.
+  assert.equal(result.outputs.dedupe?.[0]?.[0]?.json.seen, 1);
+});
+
+test('Aggregate collects one field from every item into a single item', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('aggregate', 'flow.aggregate', { mode: 'field', field: 'email', outputField: 'emails' }),
+    ],
+    edges: [edge('trigger', 'aggregate')],
+  };
+
+  const { result } = await run(graph, [{ json: { email: 'a' } }, { json: { email: 'b' } }]);
+  assert.equal(result.outputs.aggregate?.[0]?.length, 1);
+  assert.deepEqual(result.outputs.aggregate?.[0]?.[0]?.json.emails, ['a', 'b']);
+});
+
+test('Summarize groups items and works out the numbers', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', {
+        groupBy: 'country',
+        aggregations: [{ key: 'total', value: 'sum' }, { key: 'total', value: 'max' }],
+      }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { country: 'DE', total: 10 } },
+    { json: { country: 'DE', total: 5 } },
+    { json: { country: 'AT', total: 3 } },
+  ]);
+
+  const rows = result.outputs.summarize?.[0] ?? [];
+  assert.equal(rows.length, 2);
+  // Groups come out in the order they were first seen, not sorted.
+  assert.deepEqual(rows[0]?.json, { country: 'DE', count: 2, sum_total: 15, max_total: 10 });
+  assert.deepEqual(rows[1]?.json, { country: 'AT', count: 1, sum_total: 3, max_total: 3 });
+});
+
+test('Summarize leaves out values that are not numbers rather than poisoning the total', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', { aggregations: [{ key: 'total', value: 'sum' }] }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  const { result } = await run(graph, [{ json: { total: 10 } }, { json: { total: '' } }, { json: {} }]);
+  assert.equal(result.outputs.summarize?.[0]?.[0]?.json.sum_total, 10);
+});
+
+test('Summarize names an operation it does not know', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', { aggregations: [{ key: 'total', value: 'median' }] }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.match(result.failure!.message, /"median" is not something Summarize can work out/);
+});
+
+test('Stop and Error fails the run with the message it was given', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('stop', 'flow.stopAndError', { message: 'Order {{ $json.id }} has no address' }),
+    ],
+    edges: [edge('trigger', 'stop')],
+  };
+
+  const { result } = await run(graph, [{ json: { id: 7 } }]);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'WorkflowError');
+  assert.equal(result.failure?.message, 'Order 7 has no address');
+});
+
+test('Wait refuses a wait longer than a run should be held open for', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('wait', 'flow.wait', { amount: 30, unit: 'minutes' })],
+    edges: [edge('trigger', 'wait')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'ConfigurationError');
+});
+
+test('Wait passes its items through', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('wait', 'flow.wait', { amount: 0, unit: 'seconds' })],
+    edges: [edge('trigger', 'wait')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 1 } }]);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.wait?.[0]?.[0]?.json.n, 1);
+});
+
 // ---------------------------------------------------------------------------
 // Failure handling
 // ---------------------------------------------------------------------------

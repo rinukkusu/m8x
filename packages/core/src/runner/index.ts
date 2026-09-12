@@ -1,3 +1,4 @@
+import { delay } from '../delay.js';
 import { resolveValue, type ExpressionScope } from '../expressions.js';
 import { describeError, errorFingerprint, type ExtractedError } from '../fingerprint.js';
 import { indexGraph, topologicalOrder, validateGraph } from '../graph.js';
@@ -615,14 +616,3 @@ function safeJson(value: unknown): string {
   }
 }
 
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(finish, ms);
-    signal.addEventListener('abort', finish, { once: true });
-    function finish() {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', finish);
-      resolve();
-    }
-  });
-}

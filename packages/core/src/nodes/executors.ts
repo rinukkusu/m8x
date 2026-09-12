@@ -1,8 +1,24 @@
 import type { NodeDefinition, NodeExecute } from '../types.js';
 import * as descriptors from './descriptors.js';
 import { executeCode } from './impl/code.js';
-import { executeFilter, executeIf, executeMerge, executeSplitOut } from './impl/flow.js';
+import {
+  executeFilter,
+  executeIf,
+  executeMerge,
+  executeNoOp,
+  executeSplitOut,
+  executeStopAndError,
+  executeSwitch,
+  executeWait,
+} from './impl/flow.js';
 import { executeHttpRequest } from './impl/http-request.js';
+import {
+  executeAggregate,
+  executeLimit,
+  executeRemoveDuplicates,
+  executeSort,
+  executeSummarize,
+} from './impl/items.js';
 import { executeSet } from './impl/set.js';
 import {
   executeTelegramAnswerCallbackQuery,
@@ -39,8 +55,17 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'action.telegram.api': executeTelegramApi,
   'flow.if': executeIf,
   'flow.filter': executeFilter,
+  'flow.switch': executeSwitch,
   'flow.merge': executeMerge,
   'flow.splitOut': executeSplitOut,
+  'flow.aggregate': executeAggregate,
+  'flow.summarize': executeSummarize,
+  'flow.sort': executeSort,
+  'flow.limit': executeLimit,
+  'flow.removeDuplicates': executeRemoveDuplicates,
+  'flow.wait': executeWait,
+  'flow.noOp': executeNoOp,
+  'flow.stopAndError': executeStopAndError,
 };
 
 const DEFINITIONS = new Map<string, NodeDefinition>(
