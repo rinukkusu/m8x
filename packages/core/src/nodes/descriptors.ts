@@ -764,6 +764,49 @@ export const summarizeNode: NodeDescriptor = {
   ],
 };
 
+export const executeWorkflowNode: NodeDescriptor = {
+  type: 'action.executeWorkflow',
+  displayName: 'Execute Workflow',
+  description: 'Runs another workflow and carries on with what it produced.',
+  group: 'action',
+  icon: 'Workflow',
+  color: '#8b5cf6',
+  inputs: 1,
+  outputs: [''],
+  // Re-running a whole workflow on a hiccup repeats every side effect it
+  // managed to fire, so this one does not retry by itself.
+  defaultRetries: 0,
+  params: [
+    {
+      name: 'workflowId',
+      displayName: 'Workflow',
+      type: 'string',
+      required: true,
+      placeholder: 'clx0a1b2c3d4e5f6g7h8',
+      description: 'The id of the workflow to run. It is in the address bar when you open it.',
+    },
+    {
+      name: 'mode',
+      displayName: 'Run it',
+      type: 'select',
+      default: 'once',
+      options: [
+        { label: 'Once, with every item', value: 'once' },
+        { label: 'Once per item', value: 'perItem' },
+      ],
+      expression: false,
+    },
+    {
+      name: 'waitForCompletion',
+      displayName: 'Wait for it to finish',
+      type: 'boolean',
+      default: true,
+      description: 'Off queues it and carries on, handing you its execution id instead of its output.',
+      expression: false,
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Telegram
 //
@@ -1076,6 +1119,7 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   httpRequest,
   code,
   setNode,
+  executeWorkflowNode,
   telegramSendMessage,
   telegramSendPhoto,
   telegramSendDocument,

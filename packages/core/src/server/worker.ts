@@ -1,5 +1,12 @@
-import type { Graph, Item } from '../types.js';
-import { runWorkflow } from '../runner/index.js';
+import { NodeError, type Graph, type Item } from '../types.js';
+import {
+  MAX_SUBWORKFLOW_DEPTH,
+  runWorkflow,
+  terminalOutputs,
+  type RunResult,
+  type SubWorkflowRequest,
+  type SubWorkflowResult,
+} from '../runner/index.js';
 import { loadCredentialData } from './credentials.js';
 import { prisma } from './db.js';
 import {
@@ -119,16 +126,54 @@ export async function executeQueued(
     return;
   }
 
+  await runClaimedExecution(executionId, log);
+}
+
+interface InlineOptions {
+  /** The parent's signal, so cancelling it cancels the child too. */
+  signal?: AbortSignal;
+  depth?: number;
+  stack?: readonly string[];
+}
+
+/**
+ * Run an execution whose row this process has already claimed.
+ *
+ * Split out of executeQueued so a sub-workflow can reuse it. Everything that
+ * decides whether this process is allowed to run the row stays on the other
+ * side of the split.
+ */
+async function runClaimedExecution(
+  executionId: string,
+  log: (message: string) => void,
+  options: InlineOptions = {},
+): Promise<RunResult | null> {
+  const execution = await prisma.execution.findUnique({
+    where: { id: executionId },
+    include: { workflowVersion: true },
+  });
+
+  if (!execution) return null;
+
   const graph = (execution.workflowVersion?.graph ?? null) as Graph | null;
   if (!graph) {
     await failExecution(executionId, new Error('The workflow snapshot for this run is missing.'));
-    return;
+    return null;
   }
 
   const { seedItems, startNodeId } = readInput(execution.input);
   const recorder = createExecutionRecorder(executionId);
+
+  // A child runs under its parent's signal rather than starting a fresh hour of
+  // its own: it must not outlive the run that is waiting for it.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), EXECUTION_TIMEOUT_MS);
+  const inherited = options.signal;
+  const abort = () => controller.abort();
+  if (inherited) {
+    if (inherited.aborted) abort();
+    else inherited.addEventListener('abort', abort, { once: true });
+  }
+  const timeout = inherited ? undefined : setTimeout(abort, EXECUTION_TIMEOUT_MS);
 
   try {
     const restoredOutputs =
@@ -144,6 +189,9 @@ export async function executeQueued(
       restoredOutputs,
       signal: controller.signal,
       loadCredential: loadCredentialData,
+      runWorkflowById: (request) => runSubWorkflow(request, executionId, log),
+      subWorkflowDepth: options.depth ?? MAX_SUBWORKFLOW_DEPTH,
+      subWorkflowStack: options.stack,
       emit: (event) => recorder.handle(event),
     });
 
@@ -153,13 +201,86 @@ export async function executeQueued(
     await finishExecution(executionId, result);
 
     log(`[worker] ${executionId} ${result.status === 'success' ? 'ok' : result.status} in ${result.durationMs}ms`);
+    return result;
   } catch (error) {
     await recorder.flush().catch(() => {});
     await failExecution(executionId, error);
     console.error(`[worker] ${executionId} crashed`, error);
+    return null;
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
+    if (inherited) inherited.removeEventListener('abort', abort);
   }
+}
+
+/**
+ * Run a workflow on behalf of an Execute Workflow node.
+ *
+ * The child runs here, in the parent's process, rather than going through the
+ * queue. Through the queue the parent would block on a row it cannot observe
+ * finishing while still holding its worker slot, and with every slot taken by a
+ * parent waiting on a child that can never be picked up, the pool deadlocks.
+ * Running inline also hands the child the parent's abort signal for free.
+ */
+async function runSubWorkflow(
+  request: SubWorkflowRequest,
+  parentExecutionId: string,
+  log: (message: string) => void,
+): Promise<SubWorkflowResult> {
+  const workflow = await prisma.workflow.findUnique({
+    where: { id: request.workflowId },
+    select: { id: true, name: true },
+  });
+
+  if (!workflow) {
+    throw new NodeError('ConfigurationError', `There is no workflow with the id "${request.workflowId}".`);
+  }
+
+  const { executionId } = await createExecution({
+    workflowId: workflow.id,
+    trigger: 'subworkflow',
+    input: request.items,
+    parentExecutionId,
+    parentNodeId: request.nodeId,
+    // Waiting means running it here, so the queue must never see the row.
+    enqueue: !request.wait,
+  });
+
+  if (!request.wait) {
+    return { executionId, status: 'queued', items: [], workflowName: workflow.name };
+  }
+
+  if (!(await claimExecution(executionId))) {
+    throw new NodeError('SubWorkflowError', 'The sub-workflow run was claimed by something else.');
+  }
+
+  const result = await runClaimedExecution(executionId, log, {
+    signal: request.signal,
+    depth: request.depth - 1,
+    stack: request.stack,
+  });
+
+  if (!result) {
+    return { executionId, status: 'failed', items: [], workflowName: workflow.name };
+  }
+
+  const graph = await graphOf(executionId);
+
+  return {
+    executionId,
+    status: result.status,
+    items: graph ? terminalOutputs(graph, result.outputs) : [],
+    workflowName: workflow.name,
+    failure: result.failure,
+  };
+}
+
+async function graphOf(executionId: string): Promise<Graph | null> {
+  const execution = await prisma.execution.findUnique({
+    where: { id: executionId },
+    select: { workflowVersion: { select: { graph: true } } },
+  });
+  return (execution?.workflowVersion?.graph ?? null) as Graph | null;
 }
 
 /**

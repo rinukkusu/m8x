@@ -23,7 +23,7 @@ const MAX_ITEMS_STORED = 50;
 
 export interface CreateExecutionInput {
   workflowId: string;
-  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'retry';
+  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'retry' | 'subworkflow';
   /** Items handed to the trigger node. */
   input?: Item[];
   /**
@@ -32,6 +32,16 @@ export interface CreateExecutionInput {
    */
   startNodeId?: string;
   retryOfId?: string;
+  /** Set when another workflow's Execute Workflow node started this run. */
+  parentExecutionId?: string;
+  parentNodeId?: string;
+  /**
+   * Whether to hand the row to the queue. A sub-workflow the parent waits for
+   * runs inline instead, and must never be visible to another worker: whoever
+   * won the race to claim it would run it, and the parent would sit there with
+   * no items to carry on with.
+   */
+  enqueue?: boolean;
 }
 
 export interface CreatedExecution {
@@ -58,6 +68,8 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
       trigger: input.trigger,
       input: (input.input ?? []) as unknown as Prisma.InputJsonValue,
       retryOfId: input.retryOfId,
+      parentExecutionId: input.parentExecutionId,
+      parentNodeId: input.parentNodeId,
     },
     select: { id: true },
   });
@@ -76,7 +88,7 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
     });
   }
 
-  await enqueueExecution({ executionId: execution.id });
+  if (input.enqueue !== false) await enqueueExecution({ executionId: execution.id });
 
   return { executionId: execution.id, workflowVersionId: versionId };
 }

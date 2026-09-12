@@ -29,6 +29,19 @@ export default async function ExecutionDetailPage({ params }: { params: Promise<
     ? await prisma.execution.count({ where: { errorFingerprint: execution.errorFingerprint } })
     : 0;
 
+  // A node that ran another workflow gets a link through to it.
+  const children = await prisma.execution.findMany({
+    where: { parentExecutionId: execution.id },
+    orderBy: { queuedAt: 'asc' },
+    select: { id: true, parentNodeId: true },
+  });
+
+  const childExecutions: Record<string, string[]> = {};
+  for (const child of children) {
+    if (!child.parentNodeId) continue;
+    (childExecutions[child.parentNodeId] ??= []).push(child.id);
+  }
+
   const runs: NodeRunView[] = execution.nodeRuns.map((run) => ({
     id: run.id,
     nodeId: run.nodeId,
@@ -67,6 +80,7 @@ export default async function ExecutionDetailPage({ params }: { params: Promise<
       }}
       graph={(execution.workflowVersion?.graph ?? { nodes: [], edges: [] }) as unknown as Graph}
       runs={runs}
+      childExecutions={childExecutions}
       sameFailureCount={sameFailureCount}
     />
   );

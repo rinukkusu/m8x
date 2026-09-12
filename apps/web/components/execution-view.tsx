@@ -68,6 +68,8 @@ export function ExecutionView(props: {
   execution: ExecutionSummary;
   graph: Graph;
   runs: NodeRunView[];
+  /** Runs this one started, by the node that started them. */
+  childExecutions: Record<string, string[]>;
   sameFailureCount: number;
 }) {
   return (
@@ -81,11 +83,13 @@ function ExecutionViewInner({
   execution,
   graph,
   runs,
+  childExecutions,
   sameFailureCount,
 }: {
   execution: ExecutionSummary;
   graph: Graph;
   runs: NodeRunView[];
+  childExecutions: Record<string, string[]>;
   sameFailureCount: number;
 }) {
   const router = useRouter();
@@ -261,6 +265,7 @@ function ExecutionViewInner({
                     run={run}
                     isLatest={index === 0}
                     showAttempt={selectedRuns.some((candidate) => candidate.attempt > 1)}
+                    childExecutionIds={index === 0 ? (childExecutions[run.nodeId] ?? []) : []}
                   />
               ))}
             </div>
@@ -275,10 +280,12 @@ function NodeRunPanel({
   run,
   isLatest,
   showAttempt,
+  childExecutionIds,
 }: {
   run: NodeRunView;
   isLatest: boolean;
   showAttempt: boolean;
+  childExecutionIds: string[];
 }) {
   const [tab, setTab] = useState<'output' | 'input'>(run.status === 'failed' ? 'input' : 'output');
   const error = run.error as { errorType?: string; message?: string; stack?: string; logs?: Array<{ level: string; message: string }> } | null;
@@ -295,6 +302,17 @@ function NodeRunPanel({
         <Badge tone={run.status as StatusTone}>{run.status}</Badge>
         <span className="text-[11px] text-ink-faint">{formatDuration(run.durationMs)}</span>
       </div>
+
+      {childExecutionIds.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 px-4 pb-2.5 text-[11px] text-ink-faint">
+          <span>Ran</span>
+          {childExecutionIds.map((id, index) => (
+            <Link key={id} href={`/executions/${id}`} className="text-accent hover:underline">
+              {childExecutionIds.length > 1 ? `run ${index + 1}` : 'the sub-workflow'}
+            </Link>
+          ))}
+        </div>
+      ) : null}
 
       {run.status === 'failed' && error?.message ? (
         <div className="mx-4 mb-2.5 rounded-md border border-bad/25 bg-bad/10 p-2.5">

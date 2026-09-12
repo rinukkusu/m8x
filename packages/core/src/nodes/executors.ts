@@ -21,6 +21,7 @@ import {
   executeSummarize,
 } from './impl/items.js';
 import { executeSet } from './impl/set.js';
+import { executeExecuteWorkflow } from './impl/sub-workflow.js';
 import {
   executeTelegramAnswerCallbackQuery,
   executeTelegramApi,
@@ -47,6 +48,7 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'action.httpRequest': executeHttpRequest,
   'action.code': executeCode,
   'action.set': executeSet,
+  'action.executeWorkflow': executeExecuteWorkflow,
   'action.telegram.sendMessage': executeTelegramSendMessage,
   'action.telegram.sendPhoto': executeTelegramSendPhoto,
   'action.telegram.sendDocument': executeTelegramSendDocument,

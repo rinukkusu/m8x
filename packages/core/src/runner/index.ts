@@ -80,6 +80,29 @@ export type RunEvent = NodeStartEvent | NodeFinishEvent | LogEvent;
 // Inputs and result
 // ---------------------------------------------------------------------------
 
+/** What a node asks for when it runs another workflow. */
+export interface SubWorkflowRequest {
+  workflowId: string;
+  items: Item[];
+  /** The node that asked, for the child execution row and the link back. */
+  nodeId: string;
+  /** How many levels of nesting are still allowed below this one. */
+  depth: number;
+  /** Workflows already running further up the chain, innermost last. */
+  stack: readonly string[];
+  /** False queues the child and returns without waiting for it. */
+  wait: boolean;
+  signal: AbortSignal;
+}
+
+export interface SubWorkflowResult {
+  executionId: string;
+  status: 'success' | 'failed' | 'cancelled' | 'queued';
+  items: Item[];
+  workflowName?: string;
+  failure?: RunFailure;
+}
+
 export interface RunnerContext {
   executionId: string;
   workflowId: string;
@@ -98,6 +121,16 @@ export interface RunnerContext {
   signal: AbortSignal;
   /** Decrypt a credential by its id. Injected so core stays database-free. */
   loadCredential(credentialId: string): Promise<Record<string, string> | null>;
+  /**
+   * Run another workflow. Injected for the same reason as loadCredential: the
+   * child needs an execution row, and core does not touch the database.
+   * Absent when the embedder does not support it, which the node reports.
+   */
+  runWorkflowById?(request: SubWorkflowRequest): Promise<SubWorkflowResult>;
+  /** Levels of nesting still allowed below this run. */
+  subWorkflowDepth?: number;
+  /** Workflows already running above this one, innermost last. */
+  subWorkflowStack?: readonly string[];
   emit(event: RunEvent): void | Promise<void>;
 }
 
@@ -135,6 +168,9 @@ const INTERNAL_LOOP_DONE = '__loopDone';
  * timeout an hour later, with nothing in the detail view to say why.
  */
 const MAX_LOOP_ITERATIONS = Number(process.env.M8X_MAX_LOOP_ITERATIONS ?? 1000);
+
+/** How deep one workflow may call another. */
+export const MAX_SUBWORKFLOW_DEPTH = Number(process.env.M8X_MAX_SUBWORKFLOW_DEPTH ?? 5);
 
 export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
   const startedAt = Date.now();
@@ -541,6 +577,9 @@ export function isRetryable(error: ExtractedError): boolean {
   // A runaway loop is structural. Running it again just burns another 1000
   // iterations.
   if (error.errorType === 'LoopLimitError') return false;
+  // The child already retried its own nodes. Running the whole workflow again
+  // would repeat every side effect it managed to fire before it failed.
+  if (error.errorType === 'SubWorkflowError') return false;
   // 4xx means the request was wrong, not unlucky. 429 is the exception.
   const http = error.errorType.match(/^HttpError(\d{3})$/);
   if (http) {
@@ -555,6 +594,49 @@ export function isRetryable(error: ExtractedError): boolean {
     return status === 408 || status === 429 || status >= 500;
   }
   return true;
+}
+
+/**
+ * Refuse a sub-workflow call that would not terminate.
+ *
+ * Two checks because they catch different things: the stack stops A calling B
+ * calling A before anything runs, and the depth budget bounds legitimate
+ * fan-out that never repeats a workflow.
+ */
+export function assertCanCall(stack: readonly string[], depth: number, workflowId: string): void {
+  if (stack.includes(workflowId)) {
+    throw new NodeError(
+      'SubWorkflowError',
+      'That workflow is already running further up this chain, so calling it here would not terminate.',
+      { workflowId, stack: [...stack] },
+    );
+  }
+  if (depth <= 0) {
+    throw new NodeError(
+      'SubWorkflowError',
+      `Workflows are nested more than ${MAX_SUBWORKFLOW_DEPTH} deep. Raise M8X_MAX_SUBWORKFLOW_DEPTH if that is expected.`,
+    );
+  }
+}
+
+/**
+ * What a sub-workflow hands back: the output of every node that ran and has
+ * nothing after it.
+ */
+export function terminalOutputs(graph: Graph, outputs: Record<string, Item[][]>): Item[] {
+  // A child workflow may contain a loop, and a back-edge would make ordering
+  // throw rather than answer.
+  const acyclic = withoutBackEdges(graph, analyseLoops(graph));
+  const index = indexGraph(acyclic);
+  const items: Item[] = [];
+
+  for (const node of topologicalOrder(acyclic)) {
+    if ((index.outgoing.get(node.id) ?? []).length > 0) continue;
+    const output = outputs[node.id];
+    if (output) items.push(...output.flat());
+  }
+
+  return items;
 }
 
 function buildContext(args: RunNodeArgs): NodeExecuteContext {
@@ -612,6 +694,50 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
           { param: name, itemIndex },
         );
       }
+    },
+
+    async executeWorkflow(workflowId: string, items: Item[], options = {}) {
+      if (!ctx.runWorkflowById) {
+        throw new NodeError('SubWorkflowError', 'Running another workflow is not available here.');
+      }
+
+      const stack = [...(ctx.subWorkflowStack ?? []), ctx.workflowId];
+      const depth = ctx.subWorkflowDepth ?? MAX_SUBWORKFLOW_DEPTH;
+      // Checked before the child row exists, so a circular call costs nothing
+      // and fires no side effects.
+      assertCanCall(stack, depth, workflowId);
+
+      const wait = options.wait !== false;
+      const result = await ctx.runWorkflowById({
+        workflowId,
+        items,
+        nodeId: node.id,
+        depth,
+        stack,
+        wait,
+        signal: ctx.signal,
+      });
+
+      if (!wait || result.status === 'queued') {
+        return [{ json: { executionId: result.executionId, queued: true } }];
+      }
+      if (result.status === 'cancelled') {
+        throw new NodeError('CancelledError', 'The sub-workflow was cancelled.');
+      }
+      if (result.status === 'failed') {
+        const where = result.failure ? ` at "${result.failure.nodeName}"` : '';
+        throw new NodeError(
+          'SubWorkflowError',
+          `"${result.workflowName ?? workflowId}" failed${where}: ${result.failure?.message ?? 'no reason given'}`,
+          {
+            childExecutionId: result.executionId,
+            childNodeId: result.failure?.nodeId,
+            childErrorType: result.failure?.errorType,
+          },
+        );
+      }
+
+      return result.items;
     },
 
     async getCredential(paramName: string) {

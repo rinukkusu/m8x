@@ -97,6 +97,19 @@ export interface NodeExecuteContext {
   /** Decrypted credential data, or null when none is selected. */
   getCredential(paramName: string): Promise<Record<string, string> | null>;
 
+  /**
+   * Run another workflow and return the items it ended with.
+   *
+   * Throws a NodeError when the child fails, so continueOnFail and the failures
+   * page treat it like any other node going wrong. With `wait: false` the child
+   * is queued and a single item naming its execution comes back instead.
+   */
+  executeWorkflow(
+    workflowId: string,
+    items: Item[],
+    options?: { wait?: boolean },
+  ): Promise<Item[]>;
+
   readonly node: { id: string; name: string; type: string };
   readonly executionId: string;
   readonly logger: NodeLogger;

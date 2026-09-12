@@ -254,6 +254,9 @@ the gap: the poller's leasing is only exercised by running two workers.
   have.
 - **A retry from inside a loop restarts the whole run.** There is nowhere in the
   outer order to express "start at pass four".
+- **A waiting sub-workflow holds its parent's worker slot.** It runs inline, so
+  a deep chain pins one worker for the whole chain. Bounded by the nesting
+  limit.
 - **The Code node's network access is not restricted.** See above.
 - **Cancelling only works before a run starts.** Stopping one mid-flight needs
   the worker to cooperate.

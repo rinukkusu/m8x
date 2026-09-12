@@ -176,6 +176,7 @@ enum TriggerSource {
   schedule
   telegram
   retry
+  subworkflow
 }
 
 model Execution {
@@ -205,6 +206,16 @@ model Execution {
   // what turns a wall of failures into a short list of distinct problems.
   errorFingerprint String?
 
+  // Set when another workflow's Execute Workflow node started this run. Cascade
+  // rather than SetNull: a child run means nothing without its parent, and
+  // orphans would clutter the executions list forever.
+  parentExecutionId String?
+  parentExecution   Execution?  @relation("ExecutionParent", fields: [parentExecutionId], references: [id], onDelete: Cascade)
+  children          Execution[] @relation("ExecutionParent")
+  // The node in the parent graph that started it, so the parent's detail view
+  // can link through.
+  parentNodeId      String?
+
   // Set when this execution is a retry of another one.
   retryOfId String?
   retryOf   Execution?  @relation("ExecutionRetry", fields: [retryOfId], references: [id], onDelete: SetNull)
@@ -216,6 +227,7 @@ model Execution {
   @@index([status, queuedAt(sort: Desc)])
   @@index([errorFingerprint, queuedAt(sort: Desc)])
   @@index([queuedAt(sort: Desc)])
+  @@index([parentExecutionId])
 }
 
 enum NodeRunStatus {
