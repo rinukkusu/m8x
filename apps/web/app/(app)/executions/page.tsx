@@ -156,7 +156,9 @@ async function buildWhere(filters: {
   since?: string;
   fingerprint?: string;
 }): Promise<Prisma.ExecutionWhereInput> {
-  const where: Prisma.ExecutionWhereInput = {};
+  // Sub-workflow runs are reached from the parent that started them. Listing
+  // them here as well would bury the runs someone actually triggered.
+  const where: Prisma.ExecutionWhereInput = { parentExecutionId: null };
 
   // Only a real status reaches Prisma. Anything else is a typo or a poke at
   // the URL, and neither should be a 500.

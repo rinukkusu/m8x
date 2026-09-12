@@ -1,9 +1,30 @@
 import type { NodeDefinition, NodeExecute } from '../types.js';
 import * as descriptors from './descriptors.js';
 import { executeCode } from './impl/code.js';
-import { executeFilter, executeIf, executeMerge, executeSplitOut } from './impl/flow.js';
+import { executeParseCsv, executeToCsv } from './impl/csv.js';
+import {
+  executeFilter,
+  executeIf,
+  executeLoopOverItems,
+  executeMerge,
+  executeNoOp,
+  executeSplitOut,
+  executeStopAndError,
+  executeSwitch,
+  executeWait,
+} from './impl/flow.js';
 import { executeHttpRequest } from './impl/http-request.js';
+import {
+  executeAggregate,
+  executeLimit,
+  executeRemoveDuplicates,
+  executeSort,
+  executeSummarize,
+} from './impl/items.js';
+import { executeExtractHtml, executeXmlToJson } from './impl/markup.js';
+import { executeRespondToWebhook } from './impl/respond.js';
 import { executeSet } from './impl/set.js';
+import { executeExecuteWorkflow } from './impl/sub-workflow.js';
 import {
   executeTelegramAnswerCallbackQuery,
   executeTelegramApi,
@@ -30,6 +51,12 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'action.httpRequest': executeHttpRequest,
   'action.code': executeCode,
   'action.set': executeSet,
+  'action.executeWorkflow': executeExecuteWorkflow,
+  'action.respondToWebhook': executeRespondToWebhook,
+  'action.parseCsv': executeParseCsv,
+  'action.toCsv': executeToCsv,
+  'action.extractHtml': executeExtractHtml,
+  'action.xmlToJson': executeXmlToJson,
   'action.telegram.sendMessage': executeTelegramSendMessage,
   'action.telegram.sendPhoto': executeTelegramSendPhoto,
   'action.telegram.sendDocument': executeTelegramSendDocument,
@@ -39,8 +66,18 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'action.telegram.api': executeTelegramApi,
   'flow.if': executeIf,
   'flow.filter': executeFilter,
+  'flow.switch': executeSwitch,
   'flow.merge': executeMerge,
   'flow.splitOut': executeSplitOut,
+  'flow.loopOverItems': executeLoopOverItems,
+  'flow.aggregate': executeAggregate,
+  'flow.summarize': executeSummarize,
+  'flow.sort': executeSort,
+  'flow.limit': executeLimit,
+  'flow.removeDuplicates': executeRemoveDuplicates,
+  'flow.wait': executeWait,
+  'flow.noOp': executeNoOp,
+  'flow.stopAndError': executeStopAndError,
 };
 
 const DEFINITIONS = new Map<string, NodeDefinition>(

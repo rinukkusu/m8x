@@ -137,10 +137,11 @@ export const webhookTrigger: NodeDescriptor = {
       type: 'select',
       default: 'immediately',
       description:
-        'Immediately returns 202 and runs in the background. Waiting holds the request open until the workflow finishes.',
+        'Immediately returns 202 and runs in the background. The other two hold the request open until the workflow finishes.',
       options: [
         { label: 'Immediately', value: 'immediately' },
         { label: 'When the workflow finishes', value: 'whenFinished' },
+        { label: 'With a Respond to Webhook node', value: 'usingRespondNode' },
       ],
       expression: false,
     },
@@ -463,6 +464,551 @@ export const splitOutNode: NodeDescriptor = {
   ],
 };
 
+/** The indigo every flow node shares, so the group reads as one block. */
+const FLOW_COLOR = '#6366f1';
+
+export const switchNode: NodeDescriptor = {
+  type: 'flow.switch',
+  displayName: 'Switch',
+  description: 'Routes each item down one of several branches.',
+  group: 'flow',
+  icon: 'Route',
+  color: FLOW_COLOR,
+  inputs: 1,
+  // Until it has rules there is one branch, so a freshly dropped node can still
+  // be wired up. `outputsFrom` takes over the moment the first rule is written.
+  outputs: [''],
+  outputsFrom: 'rules',
+  params: [
+    {
+      name: 'rules',
+      displayName: 'Branches',
+      type: 'keyValue',
+      default: [{ key: '', value: '' }],
+      keyPlaceholder: 'branch name',
+      valuePlaceholder: '{{ $json.status === "paid" }}',
+      description: 'One branch per row. The item takes the branch whose expression is true.',
+    },
+    {
+      name: 'allMatches',
+      displayName: 'Send to every matching branch',
+      type: 'boolean',
+      default: false,
+      description: 'Off means the first match wins, which is what a Switch usually means.',
+      expression: false,
+    },
+    {
+      name: 'fallback',
+      displayName: 'Add a branch for everything else',
+      type: 'boolean',
+      default: false,
+      description: 'Without it, an item matching no rule is dropped.',
+      expression: false,
+    },
+  ],
+};
+
+export const loopOverItemsNode: NodeDescriptor = {
+  type: 'flow.loopOverItems',
+  displayName: 'Loop Over Items',
+  description: 'Runs the Loop branch once per batch, then carries on from Done with everything the branch produced.',
+  group: 'flow',
+  icon: 'Repeat',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: ['loop', 'done'],
+  params: [
+    {
+      name: 'batchSize',
+      displayName: 'Items per batch',
+      type: 'number',
+      default: 1,
+      required: true,
+      description: 'How many items the Loop branch sees at a time.',
+      expression: false,
+    },
+  ],
+};
+
+export const waitNode: NodeDescriptor = {
+  type: 'flow.wait',
+  displayName: 'Wait',
+  description: 'Pauses before carrying on. The run stays in flight, so this is for seconds and minutes, not hours.',
+  group: 'flow',
+  icon: 'Timer',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    { name: 'amount', displayName: 'Wait for', type: 'number', default: 5, required: true },
+    {
+      name: 'unit',
+      displayName: 'Unit',
+      type: 'select',
+      default: 'seconds',
+      options: [
+        { label: 'Seconds', value: 'seconds' },
+        { label: 'Minutes', value: 'minutes' },
+      ],
+      expression: false,
+    },
+  ],
+};
+
+export const noOpNode: NodeDescriptor = {
+  type: 'flow.noOp',
+  displayName: 'No Operation',
+  description: 'Passes its input straight through. Useful for tidying up a join, or standing in for a node you have not written yet.',
+  group: 'flow',
+  icon: 'CircleSlash',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [],
+};
+
+export const stopAndErrorNode: NodeDescriptor = {
+  type: 'flow.stopAndError',
+  displayName: 'Stop and Error',
+  description: 'Fails the run on purpose, so a guard clause does not need a Code node.',
+  group: 'flow',
+  icon: 'OctagonAlert',
+  color: '#ef4444',
+  inputs: 1,
+  // Nothing follows a deliberate failure.
+  outputs: [],
+  params: [
+    {
+      name: 'message',
+      displayName: 'Message',
+      type: 'text',
+      required: true,
+      placeholder: 'Order {{ $json.id }} has no shipping address',
+      description: 'What the failures page will show.',
+    },
+  ],
+};
+
+export const limitNode: NodeDescriptor = {
+  type: 'flow.limit',
+  displayName: 'Limit',
+  description: 'Keeps only the first or last few items.',
+  group: 'flow',
+  icon: 'List',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    { name: 'maxItems', displayName: 'Keep', type: 'number', default: 10, required: true },
+    {
+      name: 'keep',
+      displayName: 'From',
+      type: 'select',
+      default: 'first',
+      options: [
+        { label: 'The start', value: 'first' },
+        { label: 'The end', value: 'last' },
+      ],
+      expression: false,
+    },
+  ],
+};
+
+export const sortNode: NodeDescriptor = {
+  type: 'flow.sort',
+  displayName: 'Sort',
+  description: 'Reorders items by one or more fields.',
+  group: 'flow',
+  icon: 'ArrowDownNarrowWide',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    {
+      name: 'mode',
+      displayName: 'Order',
+      type: 'select',
+      default: 'fields',
+      options: [
+        { label: 'By field', value: 'fields' },
+        { label: 'Shuffle', value: 'random' },
+      ],
+      expression: false,
+    },
+    {
+      name: 'fields',
+      displayName: 'Sort by',
+      type: 'keyValue',
+      default: [{ key: '', value: 'asc' }],
+      keyPlaceholder: 'field',
+      valuePlaceholder: 'asc or desc',
+      description: 'Applied in order, so the first row is the primary sort. Dot notation is supported.',
+      showIf: { mode: ['fields'] },
+      expression: false,
+    },
+  ],
+};
+
+export const removeDuplicatesNode: NodeDescriptor = {
+  type: 'flow.removeDuplicates',
+  displayName: 'Remove Duplicates',
+  description: 'Keeps the first item of each kind and drops the rest.',
+  group: 'flow',
+  icon: 'CopyX',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    {
+      name: 'mode',
+      displayName: 'Compare',
+      type: 'select',
+      default: 'allFields',
+      options: [
+        { label: 'The whole item', value: 'allFields' },
+        { label: 'Selected fields', value: 'fields' },
+        { label: 'An expression', value: 'expression' },
+      ],
+      expression: false,
+    },
+    {
+      name: 'fields',
+      displayName: 'Fields',
+      type: 'string',
+      required: true,
+      placeholder: 'email, orderId',
+      description: 'Comma separated. Dot notation is supported.',
+      showIf: { mode: ['fields'] },
+      expression: false,
+    },
+    {
+      name: 'key',
+      displayName: 'Key',
+      type: 'string',
+      required: true,
+      placeholder: '{{ $json.email.toLowerCase() }}',
+      description: 'Two items with the same result are duplicates.',
+      showIf: { mode: ['expression'] },
+    },
+  ],
+};
+
+export const aggregateNode: NodeDescriptor = {
+  type: 'flow.aggregate',
+  displayName: 'Aggregate',
+  description: 'Folds every item into one, the opposite of Split Out.',
+  group: 'flow',
+  icon: 'Layers',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    {
+      name: 'mode',
+      displayName: 'Collect',
+      type: 'select',
+      default: 'field',
+      options: [
+        { label: 'One field into a list', value: 'field' },
+        { label: 'Every item into a list', value: 'allItems' },
+      ],
+      expression: false,
+    },
+    {
+      name: 'field',
+      displayName: 'Field',
+      type: 'string',
+      required: true,
+      placeholder: 'email',
+      showIf: { mode: ['field'] },
+      expression: false,
+    },
+    {
+      name: 'outputField',
+      displayName: 'Put it in',
+      type: 'string',
+      default: 'data',
+      description: 'The field on the single item that comes out.',
+      expression: false,
+    },
+  ],
+};
+
+export const summarizeNode: NodeDescriptor = {
+  type: 'flow.summarize',
+  displayName: 'Summarize',
+  description: 'Groups items and counts, sums or averages them. A pivot table in one node.',
+  group: 'flow',
+  icon: 'Sigma',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    {
+      name: 'groupBy',
+      displayName: 'Group by',
+      type: 'string',
+      placeholder: 'country, status',
+      description: 'Comma separated. Leave empty to summarise everything as one group.',
+      expression: false,
+    },
+    {
+      name: 'aggregations',
+      displayName: 'Work out',
+      type: 'keyValue',
+      default: [],
+      keyPlaceholder: 'field',
+      valuePlaceholder: 'sum, avg, min, max, count or concat',
+      description: 'Each row adds a field named after the operation, e.g. sum_total. Every group is counted anyway.',
+      expression: false,
+    },
+  ],
+};
+
+export const respondToWebhookNode: NodeDescriptor = {
+  type: 'action.respondToWebhook',
+  displayName: 'Respond to Webhook',
+  description: 'Decides what the caller gets back. Put it last, and set the trigger to respond with a node.',
+  group: 'action',
+  icon: 'Reply',
+  color: '#22c55e',
+  inputs: 1,
+  // What comes out is the response itself, which is why this belongs at the end
+  // of its branch rather than in the middle of one.
+  outputs: [''],
+  params: [
+    {
+      name: 'body',
+      displayName: 'Body',
+      type: 'text',
+      placeholder: '{{ $json }}',
+      description: 'Sent as it is. A JSON content type is written out as JSON.',
+    },
+    {
+      name: 'contentType',
+      displayName: 'Send as',
+      type: 'select',
+      default: 'application/json',
+      options: [
+        { label: 'JSON', value: 'application/json' },
+        { label: 'Plain text', value: 'text/plain' },
+        { label: 'HTML', value: 'text/html' },
+        { label: 'XML', value: 'application/xml' },
+      ],
+      expression: false,
+    },
+    { name: 'status', displayName: 'Status code', type: 'number', default: 200, expression: false },
+    {
+      name: 'headers',
+      displayName: 'Extra headers',
+      type: 'keyValue',
+      default: [],
+      keyPlaceholder: 'header',
+      valuePlaceholder: 'value',
+    },
+  ],
+};
+
+/** The slate the data-shaping nodes share. */
+const DATA_COLOR = '#0ea5e9';
+
+export const parseCsvNode: NodeDescriptor = {
+  type: 'action.parseCsv',
+  displayName: 'Parse CSV',
+  description: 'Turns CSV text into one item per row.',
+  group: 'action',
+  icon: 'Table',
+  color: DATA_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    {
+      name: 'text',
+      displayName: 'CSV',
+      type: 'text',
+      required: true,
+      placeholder: '{{ $json.body }}',
+    },
+    {
+      name: 'delimiter',
+      displayName: 'Separator',
+      type: 'string',
+      default: ',',
+      description: 'Use \\t for a tab.',
+      expression: false,
+    },
+    {
+      name: 'header',
+      displayName: 'The first row holds the column names',
+      type: 'boolean',
+      default: true,
+      description: 'Off names the fields column1, column2, and so on.',
+      expression: false,
+    },
+  ],
+};
+
+export const toCsvNode: NodeDescriptor = {
+  type: 'action.toCsv',
+  displayName: 'Build CSV',
+  description: 'Turns every item into one row of CSV text, in a single item.',
+  group: 'action',
+  icon: 'FileSpreadsheet',
+  color: DATA_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    {
+      name: 'fields',
+      displayName: 'Columns',
+      type: 'string',
+      placeholder: 'id, email, total',
+      description: 'Comma separated. Leave empty to use every field that appears.',
+      expression: false,
+    },
+    { name: 'delimiter', displayName: 'Separator', type: 'string', default: ',', expression: false },
+    {
+      name: 'header',
+      displayName: 'Write a header row',
+      type: 'boolean',
+      default: true,
+      expression: false,
+    },
+    {
+      name: 'outputField',
+      displayName: 'Put it in',
+      type: 'string',
+      default: 'csv',
+      expression: false,
+    },
+  ],
+};
+
+export const extractHtmlNode: NodeDescriptor = {
+  type: 'action.extractHtml',
+  displayName: 'Extract from HTML',
+  description: 'Pulls values out of an HTML page with CSS selectors.',
+  group: 'action',
+  icon: 'CodeXml',
+  color: DATA_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    { name: 'html', displayName: 'HTML', type: 'text', required: true, placeholder: '{{ $json.body }}' },
+    {
+      name: 'extractions',
+      displayName: 'Take',
+      type: 'keyValue',
+      default: [{ key: '', value: '' }],
+      keyPlaceholder: 'field name',
+      valuePlaceholder: 'h1.title',
+      description: 'A CSS selector per field.',
+      expression: false,
+    },
+    {
+      name: 'take',
+      displayName: 'From each match',
+      type: 'select',
+      default: 'text',
+      options: [
+        { label: 'The text', value: 'text' },
+        { label: 'The inner HTML', value: 'html' },
+        { label: 'An attribute', value: 'attribute' },
+      ],
+      expression: false,
+    },
+    {
+      name: 'attribute',
+      displayName: 'Attribute',
+      type: 'string',
+      required: true,
+      placeholder: 'href',
+      showIf: { take: ['attribute'] },
+      expression: false,
+    },
+    {
+      name: 'all',
+      displayName: 'Keep every match, not just the first',
+      type: 'boolean',
+      default: false,
+      description: 'On gives each field an array.',
+      expression: false,
+    },
+  ],
+};
+
+export const xmlToJsonNode: NodeDescriptor = {
+  type: 'action.xmlToJson',
+  displayName: 'Parse XML',
+  description: 'Turns XML into ordinary fields you can read with expressions.',
+  group: 'action',
+  icon: 'CodeXml',
+  color: DATA_COLOR,
+  inputs: 1,
+  outputs: [''],
+  params: [
+    { name: 'xml', displayName: 'XML', type: 'text', required: true, placeholder: '{{ $json.body }}' },
+    {
+      name: 'outputField',
+      displayName: 'Put it in',
+      type: 'string',
+      description: 'Leave empty to replace the item with what the XML held.',
+      expression: false,
+    },
+    {
+      name: 'attributes',
+      displayName: 'Keep attributes',
+      type: 'boolean',
+      default: true,
+      description: 'They arrive prefixed with @ so they cannot collide with a child element.',
+      expression: false,
+    },
+  ],
+};
+
+export const executeWorkflowNode: NodeDescriptor = {
+  type: 'action.executeWorkflow',
+  displayName: 'Execute Workflow',
+  description: 'Runs another workflow and carries on with what it produced.',
+  group: 'action',
+  icon: 'Workflow',
+  color: '#8b5cf6',
+  inputs: 1,
+  outputs: [''],
+  // Re-running a whole workflow on a hiccup repeats every side effect it
+  // managed to fire, so this one does not retry by itself.
+  defaultRetries: 0,
+  params: [
+    {
+      name: 'workflowId',
+      displayName: 'Workflow',
+      type: 'string',
+      required: true,
+      placeholder: 'clx0a1b2c3d4e5f6g7h8',
+      description: 'The id of the workflow to run. It is in the address bar when you open it.',
+    },
+    {
+      name: 'mode',
+      displayName: 'Run it',
+      type: 'select',
+      default: 'once',
+      options: [
+        { label: 'Once, with every item', value: 'once' },
+        { label: 'Once per item', value: 'perItem' },
+      ],
+      expression: false,
+    },
+    {
+      name: 'waitForCompletion',
+      displayName: 'Wait for it to finish',
+      type: 'boolean',
+      default: true,
+      description: 'Off queues it and carries on, handing you its execution id instead of its output.',
+      expression: false,
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Telegram
 //
@@ -775,6 +1321,12 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   httpRequest,
   code,
   setNode,
+  executeWorkflowNode,
+  respondToWebhookNode,
+  parseCsvNode,
+  toCsvNode,
+  extractHtmlNode,
+  xmlToJsonNode,
   telegramSendMessage,
   telegramSendPhoto,
   telegramSendDocument,
@@ -784,6 +1336,16 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   telegramApi,
   ifNode,
   filterNode,
+  switchNode,
   mergeNode,
   splitOutNode,
+  loopOverItemsNode,
+  aggregateNode,
+  summarizeNode,
+  sortNode,
+  limitNode,
+  removeDuplicatesNode,
+  waitNode,
+  noOpNode,
+  stopAndErrorNode,
 ];

@@ -3,6 +3,8 @@
 import {
   NODE_DESCRIPTORS,
   defaultParams,
+  getNodeDescriptor,
+  resolveOutputs,
   validateGraph,
   type Graph,
   type GraphEdge,
@@ -140,6 +142,18 @@ function EditorInner({
         node.id === nodeId ? { ...node, data: { ...node.data, node: { ...node.data.node, ...patch } } } : node,
       ),
     );
+
+    // A node whose branches follow its parameters (a Switch losing a rule) can
+    // leave an edge hanging off a handle that no longer exists, which renders as
+    // a wire to nowhere. Drop those rather than let the canvas lie.
+    if (patch.params === undefined) return;
+    setEdges((current) => {
+      const node = nodes.find((candidate) => candidate.id === nodeId);
+      const definition = node && getNodeDescriptor(node.data.node.type);
+      if (!definition) return current;
+      const branches = resolveOutputs(definition, patch.params!).length;
+      return current.filter((edge) => edge.source !== nodeId || Number(edge.sourceHandle ?? 0) < branches);
+    });
   }
 
   function addNode(definition: NodeDescriptor) {

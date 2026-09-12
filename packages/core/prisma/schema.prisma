@@ -176,6 +176,7 @@ enum TriggerSource {
   schedule
   telegram
   retry
+  subworkflow
 }
 
 model Execution {
@@ -205,6 +206,16 @@ model Execution {
   // what turns a wall of failures into a short list of distinct problems.
   errorFingerprint String?
 
+  // Set when another workflow's Execute Workflow node started this run. Cascade
+  // rather than SetNull: a child run means nothing without its parent, and
+  // orphans would clutter the executions list forever.
+  parentExecutionId String?
+  parentExecution   Execution?  @relation("ExecutionParent", fields: [parentExecutionId], references: [id], onDelete: Cascade)
+  children          Execution[] @relation("ExecutionParent")
+  // The node in the parent graph that started it, so the parent's detail view
+  // can link through.
+  parentNodeId      String?
+
   // Set when this execution is a retry of another one.
   retryOfId String?
   retryOf   Execution?  @relation("ExecutionRetry", fields: [retryOfId], references: [id], onDelete: SetNull)
@@ -216,6 +227,7 @@ model Execution {
   @@index([status, queuedAt(sort: Desc)])
   @@index([errorFingerprint, queuedAt(sort: Desc)])
   @@index([queuedAt(sort: Desc)])
+  @@index([parentExecutionId])
 }
 
 enum NodeRunStatus {
@@ -230,14 +242,17 @@ model NodeRun {
   executionId String
   execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
 
-  nodeId   String
-  nodeName String
-  nodeType String
-  status   NodeRunStatus
+  nodeId    String
+  nodeName  String
+  nodeType  String
+  status    NodeRunStatus
   // 1 for the first try. Each retry gets its own row.
-  attempt  Int           @default(1)
+  attempt   Int           @default(1)
+  // Which pass of a Loop Over Items this row belongs to, 0 outside any loop.
+  // A loop body emits one row per node per pass, all of them attempt 1.
+  iteration Int           @default(0)
   // Order the runner reached this node in, for stable display.
-  sequence Int
+  sequence  Int
 
   startedAt  DateTime  @default(now())
   finishedAt DateTime?

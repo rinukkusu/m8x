@@ -8,8 +8,14 @@ into failures are all part of the thing, not part of a paid tier.
 - **A visual editor.** A node graph on a canvas, with a parameter panel
   generated from each node's schema.
 - **Built-in nodes.** Manual, Webhook, Schedule and Telegram triggers; HTTP
-  Request, Code and Set; seven Telegram actions; If, Filter, Merge and Split
-  Out. The Code node is the escape hatch for everything else.
+  Request, Code, Set, Execute Workflow, Respond to Webhook, CSV, HTML and XML;
+  seven Telegram actions; and the flow group — If, Filter, Switch, Merge, Split
+  Out, Loop Over Items, Aggregate, Summarize, Sort, Limit, Remove Duplicates,
+  Wait, No Operation and Stop and Error. The Code node is the escape hatch for
+  everything else.
+- **Loops and sub-workflows.** A back-edge into a Loop Over Items node is the
+  one cycle the runner allows, and Execute Workflow runs another workflow and
+  carries on with what it produced.
 - **Telegram bots, shared properly.** A bot is polled once and its messages are
   handed to every workflow listening for them, so one bot can back five
   workflows with different command filters instead of one workflow monopolising
@@ -175,6 +181,37 @@ rows. The failures view filters and groups by those columns constantly, and
 digging into node runs for every row would make the page slow exactly when it
 becomes useful.
 
+### Loops
+
+The runner orders the graph and walks it once, which is why a cycle used to be a
+hard error. One cycle is allowed now: a back-edge into a **Loop Over Items**
+node.
+
+That node's *region* is everything reachable from its Loop branch that is not
+also reachable from its Done branch. The subtraction is the whole design. A node
+fed by both branches is where the loop rejoins the workflow, so it runs once,
+afterwards. A leaf hanging off the Loop branch that never returns — "post a
+message per batch" — is inside the region and runs every pass, which is what
+putting it there means.
+
+The region is collapsed onto its loop node before ordering, then run with a
+nested pass. Each pass writes its own `NodeRun` rows, so the detail view shows
+every one of them rather than only the last. Loops inside loops are refused by
+name; the scheduler generalises to them, so that is a validation rule rather
+than a rewrite.
+
+### Sub-workflows
+
+An Execute Workflow node runs a child in the parent's own process rather than
+through the queue. Through the queue the parent would block on a row it cannot
+observe finishing while still holding its worker slot, and once every slot is a
+parent waiting on a child queued behind it, the pool deadlocks. Running inline
+also means the parent's abort signal reaches the child for nothing.
+
+Two guards stop a chain that would not end: the ancestor stack refuses a
+workflow already running above this one, before any side effect fires, and a
+depth budget bounds fan-out that never repeats a workflow.
+
 ### Expressions
 
 Node parameters take `{{ }}` templates: `{{ $json.order.total * 2 }}`. Available
@@ -213,6 +250,8 @@ fix before letting untrusted people write workflows.
 | `M8X_RUN_WORKER_IN_WEB` | set to `1` to run the worker inside the web server |
 | `M8X_CODE_SANDBOX_PATH` | override for the Code node's sandbox script; both images set it already |
 | `M8X_TELEGRAM_API_BASE` | override for `https://api.telegram.org`, for a local Bot API server or an egress proxy |
+| `M8X_MAX_LOOP_ITERATIONS` | passes a Loop Over Items node may make before the run fails, default 1000 |
+| `M8X_MAX_SUBWORKFLOW_DEPTH` | how deep one workflow may call another, default 5 |
 
 ## Images
 
@@ -235,7 +274,8 @@ npm test
 ```
 
 The suite covers the runner: topological ordering, item fan-out through
-branches, retry and backoff, expression evaluation and its sandbox limits, and
+branches, loop regions and what each pass may see, sub-workflow calls through a
+stub, retry and backoff, expression evaluation and its sandbox limits, and
 error fingerprinting. It also covers the pure half of the Telegram nodes, which
 is the payload each one builds and the rules deciding which triggers an incoming
 update belongs to. Those are the places where a subtle bug is expensive and a
@@ -246,8 +286,17 @@ the gap: the poller's leasing is only exercised by running two workers.
 
 ## Known gaps
 
-- **No loops.** The runner requires a directed acyclic graph and rejects cycles
-  with a named error. A batching node needs real cycle support in the scheduler.
+- **No loops inside loops.** One Loop Over Items node can close a cycle; a
+  second one inside its region is refused by name. The scheduler generalises to
+  nested regions, so this is a validation rule rather than a rewrite.
+- **A Wait is capped at five minutes.** The run is held open for the whole wait.
+  Longer than that needs suspend and resume state the Execution model does not
+  have.
+- **A retry from inside a loop restarts the whole run.** There is nowhere in the
+  outer order to express "start at pass four".
+- **A waiting sub-workflow holds its parent's worker slot.** It runs inline, so
+  a deep chain pins one worker for the whole chain. Bounded by the nesting
+  limit.
 - **The Code node's network access is not restricted.** See above.
 - **Cancelling only works before a run starts.** Stopping one mid-flight needs
   the worker to cooperate.

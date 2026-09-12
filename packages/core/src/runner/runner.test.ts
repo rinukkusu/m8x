@@ -3,11 +3,21 @@ import test from 'node:test';
 
 import { evaluateExpression, resolveValue, type ExpressionScope } from '../expressions.js';
 import { errorFingerprint, normaliseErrorMessage } from '../fingerprint.js';
-import { findCycle, topologicalOrder } from '../graph.js';
+import { analyseLoops, findCycle, topologicalOrder } from '../graph.js';
 import { compare } from '../nodes/conditions.js';
+import { resolveOutputs } from '../nodes/index.js';
 import { resolveTimeout } from '../nodes/params.js';
-import type { Graph, GraphEdge, GraphNode, Item } from '../types.js';
-import { isRetryable, runWorkflow, type RunEvent } from './index.js';
+import type { Graph, GraphEdge, GraphNode, Item, NodeDescriptor } from '../types.js';
+import {
+  MAX_SUBWORKFLOW_DEPTH,
+  assertCanCall,
+  isRetryable,
+  runWorkflow,
+  terminalOutputs,
+  type RunEvent,
+  type RunnerContext,
+  type SubWorkflowRequest,
+} from './index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,7 +31,11 @@ function edge(source: string, target: string, sourceOutput = 0, targetInput = 0)
   return { id: `${source}->${target}:${sourceOutput}`, source, sourceOutput, target, targetInput };
 }
 
-async function run(graph: Graph, seedItems: Item[] = [{ json: {} }]) {
+async function run(
+  graph: Graph,
+  seedItems: Item[] = [{ json: {} }],
+  extra: Partial<RunnerContext> = {},
+) {
   const events: RunEvent[] = [];
   const result = await runWorkflow({
     executionId: 'exec_test',
@@ -34,6 +48,7 @@ async function run(graph: Graph, seedItems: Item[] = [{ json: {} }]) {
     emit: (event) => {
       events.push(event);
     },
+    ...extra,
   });
   return { result, events };
 }
@@ -153,6 +168,46 @@ test('unknown variables are named in the error', () => {
 test('expressions resolve inside nested objects and arrays', () => {
   const value = { list: ['{{ $json.a }}', 'literal'], nested: { x: '{{ $json.a }}' } };
   assert.deepEqual(resolveValue(value, scope({ a: 7 })), { list: [7, 'literal'], nested: { x: 7 } });
+});
+
+// ---------------------------------------------------------------------------
+// Output branches
+// ---------------------------------------------------------------------------
+
+const branching: NodeDescriptor = {
+  type: 'test.branching',
+  displayName: 'Branching',
+  description: 'A node whose branches follow its rules.',
+  group: 'flow',
+  icon: 'GitBranch',
+  color: '#000000',
+  inputs: 1,
+  outputs: ['unconfigured'],
+  outputsFrom: 'rules',
+  params: [],
+};
+
+test('branch labels come from the rules that define them', () => {
+  assert.deepEqual(
+    resolveOutputs(branching, { rules: [{ key: 'paid', value: '' }, { key: 'refunded', value: '' }] }),
+    ['paid', 'refunded'],
+  );
+});
+
+test('a rule with no label still gets a branch, so the wiring survives', () => {
+  assert.deepEqual(resolveOutputs(branching, { rules: [{ key: '', value: '' }] }), ['Branch 1']);
+});
+
+test('an unconfigured node falls back to its declared outputs', () => {
+  assert.deepEqual(resolveOutputs(branching, {}), ['unconfigured']);
+  assert.deepEqual(resolveOutputs(branching, { rules: [] }), ['unconfigured']);
+});
+
+test('the fallback branch is appended last', () => {
+  assert.deepEqual(
+    resolveOutputs(branching, { rules: [{ key: 'paid', value: '' }], fallback: true }),
+    ['paid', 'fallback'],
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -340,6 +395,735 @@ test('Merge combines two inputs by a matching field', async () => {
   const merged = result.outputs.merge?.[0]?.[0]?.json;
   assert.equal(merged?.a, 'x');
   assert.equal(merged?.b, 'y');
+});
+
+test('Switch sends each item down the first branch that matches', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', {
+        rules: [
+          { key: 'big', value: '{{ $json.n > 10 }}' },
+          { key: 'small', value: '{{ $json.n > 0 }}' },
+        ],
+      }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 50 } }, { json: { n: 5 } }, { json: { n: -1 } }]);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.switch?.[0]?.length, 1);
+  // 5 matches the second rule only; 50 matches both but stops at the first.
+  assert.equal(result.outputs.switch?.[1]?.[0]?.json.n, 5);
+  // Nothing matched -1 and there is no fallback branch, so it is dropped.
+  assert.equal(result.outputs.switch?.length, 2);
+});
+
+test('Switch can send an item to every matching branch', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', {
+        allMatches: true,
+        rules: [
+          { key: 'big', value: '{{ $json.n > 10 }}' },
+          { key: 'positive', value: '{{ $json.n > 0 }}' },
+        ],
+      }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 50 } }]);
+  assert.equal(result.outputs.switch?.[0]?.length, 1);
+  assert.equal(result.outputs.switch?.[1]?.length, 1);
+});
+
+test('the Switch fallback branch collects what nothing matched', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', {
+        fallback: true,
+        rules: [{ key: 'paid', value: '{{ $json.status === "paid" }}' }],
+      }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { status: 'refunded' } }]);
+  assert.equal(result.outputs.switch?.[0]?.length, 0);
+  assert.equal(result.outputs.switch?.[1]?.[0]?.json.status, 'refunded');
+});
+
+test('a Switch rule resolving to the string "false" does not match', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('switch', 'flow.switch', { fallback: true, rules: [{ key: 'yes', value: '{{ $json.flag }}' }] }),
+    ],
+    edges: [edge('trigger', 'switch')],
+  };
+
+  const { result } = await run(graph, [{ json: { flag: 'false' } }]);
+  assert.equal(result.outputs.switch?.[0]?.length, 0);
+  assert.equal(result.outputs.switch?.[1]?.length, 1);
+});
+
+test('Limit keeps the end of the list when asked to', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('limit', 'flow.limit', { maxItems: 2, keep: 'last' })],
+    edges: [edge('trigger', 'limit')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 1 } }, { json: { n: 2 } }, { json: { n: 3 } }]);
+  assert.deepEqual(result.outputs.limit?.[0]?.map((item) => item.json.n), [2, 3]);
+});
+
+test('Sort orders by several fields, the first breaking ties last', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('sort', 'flow.sort', {
+        mode: 'fields',
+        fields: [{ key: 'group', value: 'asc' }, { key: 'score', value: 'desc' }],
+      }),
+    ],
+    edges: [edge('trigger', 'sort')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { group: 'b', score: 1 } },
+    { json: { group: 'a', score: 1 } },
+    { json: { group: 'a', score: 9 } },
+  ]);
+
+  assert.deepEqual(
+    result.outputs.sort?.[0]?.map((item) => `${item.json.group}${item.json.score}`),
+    ['a9', 'a1', 'b1'],
+  );
+});
+
+test('Sort compares numbers as numbers, not as text', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('sort', 'flow.sort', { mode: 'fields', fields: [{ key: 'n', value: 'asc' }] })],
+    edges: [edge('trigger', 'sort')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 10 } }, { json: { n: 9 } }, { json: { n: 100 } }]);
+  assert.deepEqual(result.outputs.sort?.[0]?.map((item) => item.json.n), [9, 10, 100]);
+});
+
+test('Remove Duplicates ignores the order the fields were written in', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('dedupe', 'flow.removeDuplicates', {})],
+    edges: [edge('trigger', 'dedupe')],
+  };
+
+  const { result } = await run(graph, [{ json: { a: 1, b: 2 } }, { json: { b: 2, a: 1 } }]);
+  assert.equal(result.outputs.dedupe?.[0]?.length, 1);
+});
+
+test('Remove Duplicates can compare named fields only', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('dedupe', 'flow.removeDuplicates', { mode: 'fields', fields: 'email' }),
+    ],
+    edges: [edge('trigger', 'dedupe')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { email: 'a@example.com', seen: 1 } },
+    { json: { email: 'a@example.com', seen: 2 } },
+    { json: { email: 'b@example.com', seen: 3 } },
+  ]);
+  assert.equal(result.outputs.dedupe?.[0]?.length, 2);
+  // The first occurrence is the one that survives.
+  assert.equal(result.outputs.dedupe?.[0]?.[0]?.json.seen, 1);
+});
+
+test('Aggregate collects one field from every item into a single item', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('aggregate', 'flow.aggregate', { mode: 'field', field: 'email', outputField: 'emails' }),
+    ],
+    edges: [edge('trigger', 'aggregate')],
+  };
+
+  const { result } = await run(graph, [{ json: { email: 'a' } }, { json: { email: 'b' } }]);
+  assert.equal(result.outputs.aggregate?.[0]?.length, 1);
+  assert.deepEqual(result.outputs.aggregate?.[0]?.[0]?.json.emails, ['a', 'b']);
+});
+
+test('Summarize groups items and works out the numbers', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', {
+        groupBy: 'country',
+        aggregations: [{ key: 'total', value: 'sum' }, { key: 'total', value: 'max' }],
+      }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { country: 'DE', total: 10 } },
+    { json: { country: 'DE', total: 5 } },
+    { json: { country: 'AT', total: 3 } },
+  ]);
+
+  const rows = result.outputs.summarize?.[0] ?? [];
+  assert.equal(rows.length, 2);
+  // Groups come out in the order they were first seen, not sorted.
+  assert.deepEqual(rows[0]?.json, { country: 'DE', count: 2, sum_total: 15, max_total: 10 });
+  assert.deepEqual(rows[1]?.json, { country: 'AT', count: 1, sum_total: 3, max_total: 3 });
+});
+
+test('Summarize leaves out values that are not numbers rather than poisoning the total', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', { aggregations: [{ key: 'total', value: 'sum' }] }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  const { result } = await run(graph, [{ json: { total: 10 } }, { json: { total: '' } }, { json: {} }]);
+  assert.equal(result.outputs.summarize?.[0]?.[0]?.json.sum_total, 10);
+});
+
+test('Summarize names an operation it does not know', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', { aggregations: [{ key: 'total', value: 'median' }] }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.match(result.failure!.message, /"median" is not something Summarize can work out/);
+});
+
+test('Stop and Error fails the run with the message it was given', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('stop', 'flow.stopAndError', { message: 'Order {{ $json.id }} has no address' }),
+    ],
+    edges: [edge('trigger', 'stop')],
+  };
+
+  const { result } = await run(graph, [{ json: { id: 7 } }]);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'WorkflowError');
+  assert.equal(result.failure?.message, 'Order 7 has no address');
+});
+
+test('Wait refuses a wait longer than a run should be held open for', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('wait', 'flow.wait', { amount: 30, unit: 'minutes' })],
+    edges: [edge('trigger', 'wait')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'ConfigurationError');
+});
+
+test('Wait passes its items through', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('wait', 'flow.wait', { amount: 0, unit: 'seconds' })],
+    edges: [edge('trigger', 'wait')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 1 } }]);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.wait?.[0]?.[0]?.json.n, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Loops
+// ---------------------------------------------------------------------------
+
+/** trigger -> loop, loop branch -> body -> back to loop, done branch -> after. */
+function loopGraph(batchSize: number, bodyParams: Record<string, unknown> = {}): Graph {
+  return {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('loop', 'flow.loopOverItems', { batchSize }),
+      node('body', 'action.set', { assignments: [{ key: 'seen', value: true }], ...bodyParams }, 0, 100),
+      // No Operation rather than Set: Set makes an item out of an empty input,
+      // which would hide a loop that produced nothing.
+      node('after', 'flow.noOp', {}, 0, 300),
+    ],
+    edges: [
+      edge('trigger', 'loop'),
+      edge('loop', 'body', 0),
+      edge('body', 'loop'),
+      edge('loop', 'after', 1),
+    ],
+  };
+}
+
+function starts(events: RunEvent[], nodeId: string) {
+  return events.filter(
+    (event): event is Extract<RunEvent, { type: 'nodeStart' }> =>
+      event.type === 'nodeStart' && event.nodeId === nodeId,
+  );
+}
+
+test('a loop runs its branch once per batch', async () => {
+  const { result, events } = await run(loopGraph(1), [{ json: { n: 1 } }, { json: { n: 2 } }, { json: { n: 3 } }]);
+
+  assert.equal(result.status, 'success');
+  assert.equal(starts(events, 'body').length, 3);
+  // Done carries everything the branch produced, not the original input.
+  assert.equal(result.outputs.after?.[0]?.length, 3);
+  assert.equal(result.outputs.after?.[0]?.[0]?.json.seen, true);
+});
+
+test('a loop batches by the size it was given', async () => {
+  const { result, events } = await run(
+    loopGraph(2),
+    [1, 2, 3, 4, 5].map((n) => ({ json: { n } })),
+  );
+
+  // 2, 2, then 1.
+  assert.equal(starts(events, 'body').length, 3);
+  assert.equal(result.outputs.after?.[0]?.length, 5);
+});
+
+test('a batch larger than the input is one pass', async () => {
+  const { events } = await run(loopGraph(100), [{ json: { n: 1 } }, { json: { n: 2 } }]);
+  assert.equal(starts(events, 'body').length, 1);
+});
+
+test('a loop over nothing never starts its branch', async () => {
+  const graph = loopGraph(1);
+  const { result, events } = await run(graph, []);
+
+  assert.equal(result.status, 'success');
+  assert.equal(starts(events, 'body').length, 0);
+  assert.equal(result.outputs.after?.[0]?.length, 0);
+});
+
+test('each pass sees only its own batch', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('loop', 'flow.loopOverItems', { batchSize: 1 }),
+      node('body', 'action.set', { assignments: [{ key: 'doubled', value: '{{ $json.n * 2 }}' }] }, 0, 100),
+      node('after', 'flow.noOp', {}, 0, 300),
+    ],
+    edges: [edge('trigger', 'loop'), edge('loop', 'body', 0), edge('body', 'loop'), edge('loop', 'after', 1)],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 1 } }, { json: { n: 2 } }, { json: { n: 3 } }]);
+
+  // Done holds one item per pass, in the order the passes ran, and each one was
+  // worked out from that pass's batch rather than the whole input.
+  assert.deepEqual(result.outputs.after?.[0]?.map((item) => item.json.doubled), [2, 4, 6]);
+});
+
+test('events say which iteration they belong to', async () => {
+  const { events } = await run(loopGraph(1), [{ json: { n: 1 } }, { json: { n: 2 } }]);
+
+  assert.deepEqual(starts(events, 'body').map((event) => event.iteration), [1, 2]);
+  // A node outside any loop is iteration 0.
+  assert.deepEqual(starts(events, 'trigger').map((event) => event.iteration), [0]);
+
+  const sequences = events.filter((event) => event.type !== 'log').map((event) => event.sequence);
+  assert.deepEqual(sequences, [...sequences].sort((a, b) => a - b));
+});
+
+test('a loop whose upstream was skipped skips its whole region', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('manual', 'trigger.manual', {}, 0, 0),
+      node('hook', 'trigger.webhook', { path: 'orders' }, 0, 200),
+      node('loop', 'flow.loopOverItems', { batchSize: 1 }, 0, 300),
+      node('body', 'action.set', { assignments: [{ key: 'seen', value: true }] }, 0, 400),
+    ],
+    edges: [edge('hook', 'loop'), edge('loop', 'body', 0), edge('body', 'loop')],
+  };
+
+  // The run started at the manual trigger, so the webhook trigger never fires
+  // and nothing reaches the loop. The region has to go with it, or the nodes
+  // inside would look like they ran and produced nothing.
+  const { result, events } = await run(graph);
+  assert.equal(result.status, 'success');
+
+  const skipped = events
+    .filter((event) => event.type === 'nodeFinish' && event.status === 'skipped')
+    .map((event) => ('nodeId' in event ? event.nodeId : ''));
+  assert.deepEqual(skipped.sort(), ['body', 'hook', 'loop']);
+});
+
+test('a failure inside a loop stops the run', async () => {
+  const graph = loopGraph(1, { assignments: [{ key: '__proto__.polluted', value: 'yes' }] });
+  const { result } = await run(graph, [{ json: { n: 1 } }, { json: { n: 2 } }]);
+
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.nodeId, 'body');
+});
+
+test('a loop limit is not something to retry', () => {
+  assert.equal(isRetryable({ errorType: 'LoopLimitError', message: 'ran too long' }), false);
+});
+
+// ---------------------------------------------------------------------------
+// Loop validation
+// ---------------------------------------------------------------------------
+
+test('only a loop node may close a cycle', async () => {
+  const graph: Graph = {
+    nodes: [node('a', 'trigger.manual'), node('b', 'action.set'), node('c', 'action.set')],
+    edges: [edge('a', 'b'), edge('b', 'c'), edge('c', 'b')],
+  };
+
+  const { result, events } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'GraphError');
+  assert.match(result.failure!.message, /Only a Loop Over Items node can close a loop/);
+  assert.equal(events.length, 0);
+});
+
+test('the Done branch may not lead back into the loop', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('loop', 'flow.loopOverItems', { batchSize: 1 }),
+      node('report', 'action.set', { assignments: [] }, 0, 100),
+    ],
+    edges: [edge('trigger', 'loop'), edge('loop', 'report', 1), edge('report', 'loop')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.match(result.failure!.message, /is on the Done branch of "loop" and leads back into it/);
+});
+
+test('a loop inside a loop is refused by name', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('outer', 'flow.loopOverItems', { batchSize: 1 }),
+      node('inner', 'flow.loopOverItems', { batchSize: 1 }, 0, 100),
+      node('body', 'action.set', { assignments: [] }, 0, 200),
+    ],
+    edges: [
+      edge('trigger', 'outer'),
+      edge('outer', 'inner', 0),
+      edge('inner', 'body', 0),
+      edge('body', 'inner'),
+      edge('inner', 'outer', 1),
+    ],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.match(result.failure!.message, /Loops inside loops are not supported yet/);
+});
+
+test('a loop region holds what the Loop branch reaches, minus what Done reaches', () => {
+  const graph: Graph = {
+    nodes: [
+      node('loop', 'flow.loopOverItems'),
+      node('body', 'action.set', {}, 0, 100),
+      node('join', 'flow.merge', {}, 0, 300),
+      node('report', 'action.set', {}, 0, 400),
+    ],
+    edges: [
+      edge('loop', 'body', 0),
+      edge('body', 'loop'),
+      // Fed by both branches, so it is where the loop rejoins the workflow and
+      // belongs outside the region.
+      edge('body', 'join', 0, 0),
+      edge('loop', 'join', 1, 1),
+      edge('join', 'report'),
+    ],
+  };
+
+  const analysis = analyseLoops(graph);
+  assert.deepEqual([...(analysis.regions.get('loop') ?? [])].sort(), ['body']);
+  assert.equal(analysis.backEdges.size, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Data formats
+// ---------------------------------------------------------------------------
+
+test('CSV survives a round trip through both nodes', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('csv', 'action.toCsv', { outputField: 'csv' }),
+      node('back', 'action.parseCsv', { text: '{{ $json.csv }}' }),
+    ],
+    edges: [edge('trigger', 'csv'), edge('csv', 'back')],
+  };
+
+  const { result } = await run(graph, [
+    { json: { id: '1', note: 'a, b' } },
+    { json: { id: '2', note: 'say "hi"' } },
+  ]);
+
+  assert.equal(result.status, 'success');
+  assert.deepEqual(
+    result.outputs.back?.[0]?.map((item) => item.json),
+    [
+      { id: '1', note: 'a, b' },
+      { id: '2', note: 'say "hi"' },
+    ],
+  );
+});
+
+test('Build CSV uses every field that appears, not only the first item\'s', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('csv', 'action.toCsv', {})],
+    edges: [edge('trigger', 'csv')],
+  };
+
+  const { result } = await run(graph, [{ json: { a: 1 } }, { json: { a: 2, b: 3 } }]);
+  assert.equal(result.outputs.csv?.[0]?.[0]?.json.csv, 'a,b\n1,\n2,3');
+});
+
+test('Extract from HTML reads text and attributes by selector', async () => {
+  const html = '<h1 class="title">Hello</h1><a href="/one">1</a><a href="/two">2</a>';
+
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('extract', 'action.extractHtml', {
+        html: '{{ $json.body }}',
+        take: 'text',
+        extractions: [{ key: 'title', value: 'h1.title' }],
+      }),
+      node('links', 'action.extractHtml', {
+        html: '{{ $json.body }}',
+        take: 'attribute',
+        attribute: 'href',
+        all: true,
+        extractions: [{ key: 'links', value: 'a' }],
+      }),
+    ],
+    edges: [edge('trigger', 'extract'), edge('extract', 'links')],
+  };
+
+  const { result } = await run(graph, [{ json: { body: html } }]);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.links?.[0]?.[0]?.json.title, 'Hello');
+  assert.deepEqual(result.outputs.links?.[0]?.[0]?.json.links, ['/one', '/two']);
+});
+
+test('a selector that matches nothing gives an empty field rather than a missing one', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('extract', 'action.extractHtml', {
+        html: '<p>nothing here</p>',
+        take: 'text',
+        extractions: [{ key: 'title', value: 'h1' }],
+      }),
+    ],
+    edges: [edge('trigger', 'extract')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.outputs.extract?.[0]?.[0]?.json.title, null);
+});
+
+test('Parse XML keeps attributes apart from child elements', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('xml', 'action.xmlToJson', { xml: '<order id="7"><total>42</total></order>' }),
+    ],
+    edges: [edge('trigger', 'xml')],
+  };
+
+  const { result } = await run(graph);
+  assert.deepEqual(result.outputs.xml?.[0]?.[0]?.json, { order: { '@id': 7, total: 42 } });
+});
+
+test('Parse XML names what was wrong with the document', async () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('xml', 'action.xmlToJson', { xml: '<order><total></order>' })],
+    edges: [edge('trigger', 'xml')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'DataError');
+});
+
+test('Respond to Webhook writes the response as its output', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('respond', 'action.respondToWebhook', {
+        status: 201,
+        contentType: 'application/json',
+        body: '{{ $json }}',
+        headers: [{ key: 'X-Order', value: '{{ $json.id }}' }],
+      }),
+    ],
+    edges: [edge('trigger', 'respond')],
+  };
+
+  const { result } = await run(graph, [{ json: { id: 7 } }]);
+  assert.deepEqual(result.outputs.respond?.[0]?.[0]?.json, {
+    status: 201,
+    contentType: 'application/json',
+    // Header names are lower-cased, because that is how they arrive back.
+    headers: { 'x-order': '7' },
+    body: { id: 7 },
+  });
+});
+
+test('a status code outside the range HTTP allows falls back to 200', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('respond', 'action.respondToWebhook', { status: 99, body: 'ok' }),
+    ],
+    edges: [edge('trigger', 'respond')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.outputs.respond?.[0]?.[0]?.json.status, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Sub-workflows
+// ---------------------------------------------------------------------------
+
+function callerGraph(params: Record<string, unknown> = {}): Graph {
+  return {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('child', 'action.executeWorkflow', { workflowId: 'wf_child', ...params }),
+    ],
+    edges: [edge('trigger', 'child')],
+  };
+}
+
+test('a sub-workflow hands back the items it ended with', async () => {
+  const seen: SubWorkflowRequest[] = [];
+  const { result } = await run(callerGraph(), [{ json: { n: 1 } }], {
+    runWorkflowById: async (request) => {
+      seen.push(request);
+      return { executionId: 'exec_child', status: 'success', items: [{ json: { done: true } }] };
+    },
+  });
+
+  assert.equal(result.status, 'success');
+  assert.deepEqual(result.outputs.child?.[0]?.[0]?.json, { done: true });
+  assert.equal(seen[0]?.workflowId, 'wf_child');
+  assert.equal(seen[0]?.wait, true);
+  // The chain the child must not call back into.
+  assert.deepEqual(seen[0]?.stack, ['wf_test']);
+  assert.equal(seen[0]?.depth, MAX_SUBWORKFLOW_DEPTH);
+});
+
+test('running once per item calls the child once per item', async () => {
+  let calls = 0;
+  const { result } = await run(callerGraph({ mode: 'perItem' }), [{ json: { n: 1 } }, { json: { n: 2 } }], {
+    runWorkflowById: async (request) => {
+      calls++;
+      assert.equal(request.items.length, 1);
+      return { executionId: `exec_${calls}`, status: 'success', items: request.items };
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(result.outputs.child?.[0]?.map((item) => item.json.n), [1, 2]);
+});
+
+test('not waiting returns the execution id rather than any output', async () => {
+  const { result } = await run(callerGraph({ waitForCompletion: false }), [{ json: {} }], {
+    runWorkflowById: async () => ({ executionId: 'exec_child', status: 'queued', items: [] }),
+  });
+
+  assert.deepEqual(result.outputs.child?.[0]?.[0]?.json, { executionId: 'exec_child', queued: true });
+});
+
+test('a failed sub-workflow names the node inside it that failed', async () => {
+  const { result } = await run(callerGraph(), [{ json: {} }], {
+    runWorkflowById: async () => ({
+      executionId: 'exec_child',
+      status: 'failed',
+      items: [],
+      workflowName: 'Order sync',
+      failure: {
+        nodeId: 'send',
+        nodeName: 'Send email',
+        nodeType: 'action.httpRequest',
+        errorType: 'HttpError500',
+        message: 'the server said no',
+        fingerprint: 'f',
+      },
+    }),
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'SubWorkflowError');
+  assert.match(result.failure!.message, /"Order sync" failed at "Send email": the server said no/);
+});
+
+test('a workflow with nowhere to run a sub-workflow says so rather than hanging', async () => {
+  const { result } = await run(callerGraph());
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'SubWorkflowError');
+  assert.match(result.failure!.message, /not available here/);
+});
+
+test('a sub-workflow failure is not retried', () => {
+  assert.equal(isRetryable({ errorType: 'SubWorkflowError', message: 'child blew up' }), false);
+});
+
+test('a workflow may not call one that is already running above it', () => {
+  assert.throws(
+    () => assertCanCall(['wf_a', 'wf_b'], 5, 'wf_a'),
+    /already running further up this chain/,
+  );
+  assert.doesNotThrow(() => assertCanCall(['wf_a'], 5, 'wf_b'));
+});
+
+test('nesting stops at the depth budget', () => {
+  assert.throws(() => assertCanCall(['wf_a'], 0, 'wf_b'), /nested more than/);
+});
+
+test('a sub-workflow returns what its leaf nodes produced', () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('middle', 'action.set'), node('leaf', 'action.set')],
+    edges: [edge('trigger', 'middle'), edge('middle', 'leaf')],
+  };
+
+  const items = terminalOutputs(graph, {
+    trigger: [[{ json: { a: 1 } }]],
+    middle: [[{ json: { b: 2 } }]],
+    leaf: [[{ json: { c: 3 } }]],
+  });
+
+  assert.deepEqual(items, [{ json: { c: 3 } }]);
+});
+
+test('a node that never ran contributes nothing to the sub-workflow output', () => {
+  const graph: Graph = {
+    nodes: [node('trigger', 'trigger.manual'), node('a', 'action.set', {}, 0, 0), node('b', 'action.set', {}, 0, 100)],
+    edges: [edge('trigger', 'a'), edge('trigger', 'b')],
+  };
+
+  assert.deepEqual(terminalOutputs(graph, { trigger: [[{ json: {} }]], a: [[{ json: { a: 1 } }]] }), [
+    { json: { a: 1 } },
+  ]);
 });
 
 // ---------------------------------------------------------------------------

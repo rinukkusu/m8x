@@ -1,6 +1,7 @@
 import type { Prisma } from '@prisma/client';
 
 import { errorFingerprint } from '../fingerprint.js';
+import { analyseLoops } from '../graph.js';
 import type { Graph, Item } from '../types.js';
 import type { RunEvent, RunResult } from '../runner/index.js';
 import { prisma } from './db.js';
@@ -22,7 +23,7 @@ const MAX_ITEMS_STORED = 50;
 
 export interface CreateExecutionInput {
   workflowId: string;
-  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'retry';
+  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'retry' | 'subworkflow';
   /** Items handed to the trigger node. */
   input?: Item[];
   /**
@@ -31,6 +32,16 @@ export interface CreateExecutionInput {
    */
   startNodeId?: string;
   retryOfId?: string;
+  /** Set when another workflow's Execute Workflow node started this run. */
+  parentExecutionId?: string;
+  parentNodeId?: string;
+  /**
+   * Whether to hand the row to the queue. A sub-workflow the parent waits for
+   * runs inline instead, and must never be visible to another worker: whoever
+   * won the race to claim it would run it, and the parent would sit there with
+   * no items to carry on with.
+   */
+  enqueue?: boolean;
 }
 
 export interface CreatedExecution {
@@ -57,6 +68,8 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
       trigger: input.trigger,
       input: (input.input ?? []) as unknown as Prisma.InputJsonValue,
       retryOfId: input.retryOfId,
+      parentExecutionId: input.parentExecutionId,
+      parentNodeId: input.parentNodeId,
     },
     select: { id: true },
   });
@@ -75,7 +88,7 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
     });
   }
 
-  await enqueueExecution({ executionId: execution.id });
+  if (input.enqueue !== false) await enqueueExecution({ executionId: execution.id });
 
   return { executionId: execution.id, workflowVersionId: versionId };
 }
@@ -123,6 +136,17 @@ export async function ensureCurrentVersion(
 // ---------------------------------------------------------------------------
 
 /**
+ * Which row a finish event belongs to.
+ *
+ * The iteration has to be in the key: a node inside a loop emits one start and
+ * one finish per pass, all with attempt 1, so without it every pass after the
+ * first would update the first pass's row.
+ */
+function runKey(nodeId: string, iteration: number, attempt: number): string {
+  return `${nodeId}:${iteration}:${attempt}`;
+}
+
+/**
  * Turn runner events into database rows.
  *
  * Writes are serialised through a promise chain rather than fired in parallel,
@@ -164,6 +188,7 @@ export function createExecutionRecorder(executionId: string) {
               nodeType: event.nodeType,
               status: 'running',
               attempt: event.attempt,
+              iteration: event.iteration,
               sequence: event.sequence,
               startedAt: event.startedAt,
               input: captured.value,
@@ -171,14 +196,13 @@ export function createExecutionRecorder(executionId: string) {
             },
             select: { id: true },
           });
-          nodeRunIds.set(`${event.nodeId}:${event.attempt}`, row.id);
+          nodeRunIds.set(runKey(event.nodeId, event.iteration, event.attempt), row.id);
         });
         return;
       }
 
       queue(async () => {
-        const key = `${event.nodeId}:${event.attempt}`;
-        const existingId = nodeRunIds.get(key);
+        const existingId = nodeRunIds.get(runKey(event.nodeId, event.iteration, event.attempt));
         const output = event.output ? capture(event.output) : { value: undefined, truncated: false };
         const logs = logsByNode.get(event.nodeId);
 
@@ -208,6 +232,7 @@ export function createExecutionRecorder(executionId: string) {
             nodeName: event.nodeName,
             nodeType: event.nodeType,
             attempt: event.attempt,
+            iteration: event.iteration,
             sequence: event.sequence,
             startedAt: event.finishedAt,
             ...data,
@@ -296,7 +321,7 @@ export interface RetryOptions {
 export async function retryExecution(executionId: string, options: RetryOptions = {}): Promise<string> {
   const original = await prisma.execution.findUniqueOrThrow({
     where: { id: executionId },
-    include: { nodeRuns: { orderBy: { sequence: 'asc' } } },
+    include: { nodeRuns: { orderBy: { sequence: 'asc' } }, workflowVersion: true },
   });
 
   const storedInput = original.input as { items?: Item[] } | Item[] | null;
@@ -309,7 +334,16 @@ export async function retryExecution(executionId: string, options: RetryOptions 
     const upstreamTruncated = original.nodeRuns.some(
       (run) => run.sequence < (failedRun?.sequence ?? 0) && run.outputTruncated,
     );
-    if (failedRun && !upstreamTruncated) startNodeId = original.errorNodeId;
+    // Resuming in the middle of a loop has no meaning the runner can express:
+    // the outer pass steps over a region as one unit and there is nowhere to put
+    // "start at pass four". A full re-run is the honest fallback, the same one
+    // truncated upstream output already gets.
+    const graph = (original.workflowVersion?.graph ?? null) as Graph | null;
+    const insideLoop = graph
+      ? [...analyseLoops(graph).regions.values()].some((region) => region.has(original.errorNodeId!))
+      : false;
+
+    if (failedRun && !upstreamTruncated && !insideLoop) startNodeId = original.errorNodeId;
   }
 
   const created = await createExecution({
