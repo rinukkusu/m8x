@@ -67,25 +67,28 @@ Compose is a convenience, not a requirement. The images work on their own
 against an existing database:
 
 ```bash
-docker run -d --name m8x-worker   -e DATABASE_URL="postgresql://user:pass@your-db:5432/m8x?schema=public"   -e M8X_ENCRYPTION_KEY="..."   ghcr.io/rinukkusu/m8x-worker
-```
-
-```bash
 docker run -d --name m8x-web -p 3000:3000   -e DATABASE_URL="postgresql://user:pass@your-db:5432/m8x?schema=public"   -e M8X_ENCRYPTION_KEY="..."   -e M8X_PUBLIC_URL="https://m8x.example.com"   ghcr.io/rinukkusu/m8x-web
 ```
 
-The worker applies the schema on startup, so nothing has to run migrations for
-you. Start it first, or expect the web app to serve a few failed queries until
-the schema exists. Set `M8X_AUTO_MIGRATE=0` if your deploy pipeline would
+```bash
+docker run -d --name m8x-worker   -e DATABASE_URL="postgresql://user:pass@your-db:5432/m8x?schema=public"   -e M8X_ENCRYPTION_KEY="..."   ghcr.io/rinukkusu/m8x-worker
+```
+
+The web image applies the schema on startup, so nothing has to run migrations
+for you. Start it first, or expect the worker to log a failed scheduler tick
+until the tables exist.
+
+Workers never touch the schema, which is what makes them safe to scale: start
+three of them to work through a backlog and none of them will run DDL, let
+alone race another one doing the same. The web container is the one a
+deployment always has exactly one of, so it owns the schema.
+
+Set `M8X_AUTO_MIGRATE=0` on the web container if your deploy pipeline would
 rather own that, and apply the schema yourself with:
 
 ```bash
-docker run --rm -e DATABASE_URL="..." ghcr.io/rinukkusu/m8x-worker   npx prisma db push --schema packages/core/prisma/schema.prisma
+docker run --rm -e DATABASE_URL="..." ghcr.io/rinukkusu/m8x-web   node /opt/prisma/node_modules/prisma/build/index.js db push   --schema packages/core/prisma/schema.prisma --skip-generate
 ```
-
-Migrations live in the worker image rather than in both, so exactly one
-container touches the schema and two of them cannot race to run DDL against the
-same database.
 
 ### One container instead of two
 
@@ -98,8 +101,8 @@ docker run -d --name m8x -p 3000:3000   -e DATABASE_URL="postgresql://user:pass@
 
 It is the same execution loop either way, started from Next's instrumentation
 hook instead of from its own process, so the two arrangements cannot drift
-apart. The container also applies the schema on boot, since in this shape it is
-the only container there is.
+apart. The container still applies the schema on boot, the same as any other
+web container.
 
 What you give up, in the order it will bother you:
 
@@ -202,7 +205,7 @@ fix before letting untrusted people write workflows.
 | `M8X_FORCE_SECURE_COOKIES` | set to `1` when TLS is terminated by a proxy that does not send `x-forwarded-proto` |
 | `M8X_WORKER_CONCURRENCY` | executions in flight per worker, default 5 |
 | `M8X_VAR_*` | exposed to workflows as `$env.*`; nothing else is |
-| `M8X_AUTO_MIGRATE` | set to `0` to skip applying the schema on boot |
+| `M8X_AUTO_MIGRATE` | `1` in the web image, `0` in the worker; override to move who applies the schema |
 | `M8X_RUN_WORKER_IN_WEB` | set to `1` to run the worker inside the web server |
 | `M8X_CODE_SANDBOX_PATH` | override for the Code node's sandbox script; both images set it already |
 

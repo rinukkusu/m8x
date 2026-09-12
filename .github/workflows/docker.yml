@@ -13,9 +13,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Typecheck and tests gate the images. They take under a minute between them,
+  # and publishing a :latest that does not compile is the thing this prevents.
+  checks:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The Prisma client is generated rather than committed, and the types it
+      # produces are what the server code is checked against.
+      - name: Generate the Prisma client
+        run: npx prisma generate --schema packages/core/prisma/schema.prisma
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
   build:
     name: Build web and worker
     runs-on: ubuntu-latest
+    needs: checks
 
     permissions:
       contents: read

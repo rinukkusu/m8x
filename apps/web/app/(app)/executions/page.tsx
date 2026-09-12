@@ -10,6 +10,9 @@ export const dynamic = 'force-dynamic';
 
 const PAGE_SIZE = 50;
 
+type ExecutionStatus = 'queued' | 'running' | 'success' | 'failed' | 'cancelled';
+const STATUSES: ExecutionStatus[] = ['queued', 'running', 'success', 'failed', 'cancelled'];
+
 export default async function ExecutionsPage({
   searchParams,
 }: {
@@ -25,7 +28,10 @@ export default async function ExecutionsPage({
   await requireUser();
 
   const filters = await searchParams;
-  const page = Math.max(1, Number(filters.page ?? 1));
+  // A hand-edited query string is a normal thing to find in the URL bar, and
+  // `Math.max(1, NaN)` is NaN, which Prisma rejects rather than ignores.
+  const requested = Number(filters.page ?? 1);
+  const page = Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : 1;
   const where = await buildWhere(filters);
 
   const [executions, total, workflows] = await Promise.all([
@@ -152,8 +158,10 @@ async function buildWhere(filters: {
 }): Promise<Prisma.ExecutionWhereInput> {
   const where: Prisma.ExecutionWhereInput = {};
 
-  if (filters.status && filters.status !== 'all') {
-    where.status = filters.status as Prisma.ExecutionWhereInput['status'];
+  // Only a real status reaches Prisma. Anything else is a typo or a poke at
+  // the URL, and neither should be a 500.
+  if (filters.status && STATUSES.includes(filters.status as ExecutionStatus)) {
+    where.status = filters.status as ExecutionStatus;
   }
 
   if (filters.workflow) where.workflowId = filters.workflow;

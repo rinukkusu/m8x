@@ -7,23 +7,23 @@ set -e
 # container on its own against an existing Postgres works with no orchestration
 # at all:
 #
-#   docker run -e DATABASE_URL=... ghcr.io/rinukkusu/m8x-worker
+#   docker run -e DATABASE_URL=... ghcr.io/rinukkusu/m8x-web
 #
 # Exactly one container should do this, or two of them race to run DDL against
-# the same database. The default reflects that: the worker migrates, and the
-# web image does not, unless it is running the worker itself
-# (M8X_RUN_WORKER_IN_WEB=1), in which case it is the only container there is.
+# the same database. The app image migrates and the worker image does not,
+# because workers are the thing you scale: starting a second one to get through
+# a backlog must not touch the schema, and a deployment can run several of them
+# with no coordination between them. The app is the one container that is
+# always present and always singular, which makes it the right owner.
 #
-# Set M8X_AUTO_MIGRATE explicitly to override, for anyone who would rather
-# apply migrations from their own deploy pipeline.
+# Each image sets its own default in M8X_AUTO_MIGRATE. Override it to take the
+# job away from the app, for anyone applying migrations from their own deploy
+# pipeline instead:
+#
+#   M8X_AUTO_MIGRATE=0   never migrate, whichever image this is
+#   M8X_AUTO_MIGRATE=1   migrate, including from a worker container
 
-if [ "${M8X_RUN_WORKER_IN_WEB}" = "1" ]; then
-  AUTO_MIGRATE_DEFAULT=1
-else
-  AUTO_MIGRATE_DEFAULT="${M8X_IS_WORKER:-0}"
-fi
-
-if [ "${M8X_AUTO_MIGRATE:-$AUTO_MIGRATE_DEFAULT}" = "1" ]; then
+if [ "${M8X_AUTO_MIGRATE:-0}" = "1" ]; then
   if [ -z "${DATABASE_URL}" ]; then
     echo "[entrypoint] DATABASE_URL is not set" >&2
     exit 1

@@ -36,6 +36,11 @@ export async function signIn(email: string, password: string): Promise<SessionUs
 
   const session = await prisma.session.create({
     data: {
+      // The id is the cookie, so it is the password to the account and has to
+      // be unguessable. The schema's cuid default is not: it is a timestamp, a
+      // counter and a short random tail, so seeing one session narrows the
+      // search for the next. 32 random bytes instead.
+      id: generateToken(),
       userId: user.id,
       expiresAt: new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000),
     },
@@ -110,7 +115,7 @@ async function servingOverHttps(): Promise<boolean> {
   return forwarded?.split(',')[0]?.trim() === 'https';
 }
 
-/** Only used by the seed script's fallback path. */
+/** A secret that goes in a cookie: 32 bytes from the CSPRNG, URL-safe. */
 export function generateToken(): string {
-  return randomBytes(24).toString('base64url');
+  return randomBytes(32).toString('base64url');
 }

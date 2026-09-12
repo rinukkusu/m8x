@@ -5,6 +5,7 @@ import { evaluateExpression, resolveValue, type ExpressionScope } from '../expre
 import { errorFingerprint, normaliseErrorMessage } from '../fingerprint.js';
 import { findCycle, topologicalOrder } from '../graph.js';
 import { compare } from '../nodes/conditions.js';
+import { resolveTimeout } from '../nodes/params.js';
 import type { Graph, GraphEdge, GraphNode, Item } from '../types.js';
 import { runWorkflow, type RunEvent } from './index.js';
 
@@ -130,6 +131,17 @@ test('expressions cannot reach the prototype chain', () => {
   assert.throws(() => evaluateExpression('$json["__proto__"]', scope({})), /not allowed/);
 });
 
+test('prototype members are not variables', () => {
+  // `name in scope` would find these on Object.prototype and hand back the
+  // real constructor.
+  assert.throws(() => evaluateExpression('constructor', scope({})), /Unknown variable/);
+  assert.throws(() => evaluateExpression('hasOwnProperty', scope({})), /Unknown variable/);
+});
+
+test('a number with two dots is not silently NaN', () => {
+  assert.throws(() => evaluateExpression('1.2.3', scope({})), /Expected a property name/);
+});
+
 test('expressions cannot call methods that are not whitelisted', () => {
   assert.throws(() => evaluateExpression('$json.name.padEndX()', scope({ name: 'x' })), /not available/);
 });
@@ -229,6 +241,57 @@ test('a node whose upstream branch was not taken is skipped, not run empty', asy
       event.type === 'nodeFinish' && event.nodeId === 'yes',
   );
   assert.equal(yesFinish?.status, 'success');
+});
+
+test('a disabled node whose upstream was skipped stays skipped', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('manual', 'trigger.manual', {}, 0, 0),
+      node('hook', 'trigger.webhook', { path: 'orders' }, 0, 200),
+      { ...node('off', 'action.set', { assignments: [] }), disabled: true },
+      node('after', 'action.set', { assignments: [{ key: 'ran', value: true }] }),
+    ],
+    edges: [edge('hook', 'off'), edge('off', 'after')],
+  };
+
+  // The run started at the manual trigger, so the webhook trigger is skipped
+  // and nothing reaches the disabled node. Passing an empty input through it
+  // would fire the side effects of a branch this run never took.
+  const { result } = await run(graph);
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.after, undefined);
+});
+
+test('a disabled node still passes its input along', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      { ...node('off', 'action.set', { assignments: [{ key: 'skipped', value: true }] }), disabled: true },
+      node('after', 'action.set', { assignments: [{ key: 'ran', value: true }] }),
+    ],
+    edges: [edge('trigger', 'off'), edge('off', 'after')],
+  };
+
+  const { result } = await run(graph, [{ json: { n: 1 } }]);
+  assert.equal(result.status, 'success');
+  assert.deepEqual(result.outputs.after?.[0]?.[0]?.json, { n: 1, ran: true });
+});
+
+test('Set refuses a key that would write to the prototype', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('set', 'action.set', { assignments: [{ key: '__proto__.polluted', value: 'yes' }] }),
+    ],
+    edges: [edge('trigger', 'set')],
+  };
+
+  const { result } = await run(graph);
+  assert.equal(result.status, 'failed');
+  assert.equal(result.failure?.errorType, 'ConfigurationError');
+  // The real damage would be here rather than in the item: writing that path
+  // lands on Object.prototype and changes every other execution in the worker.
+  assert.equal(({} as Record<string, unknown>).polluted, undefined);
 });
 
 test('Split Out turns an array field into items', async () => {
@@ -444,4 +507,24 @@ test('the same message from different node types does not merge', () => {
   const fromHttp = errorFingerprint({ nodeType: 'action.httpRequest', errorType: 'TimeoutError', message: 'timed out' });
   const fromCode = errorFingerprint({ nodeType: 'action.code', errorType: 'TimeoutError', message: 'timed out' });
   assert.notEqual(fromHttp, fromCode);
+});
+
+// ---------------------------------------------------------------------------
+// Parameter coercion
+// ---------------------------------------------------------------------------
+
+test('a cleared timeout field falls back rather than meaning zero', () => {
+  // Number('') is 0, and both setTimeout and AbortSignal.timeout treat 0 as
+  // "on the next tick", which would abort every request before it left.
+  assert.equal(resolveTimeout('', 30_000, 600_000), 30_000);
+  assert.equal(resolveTimeout(undefined, 30_000, 600_000), 30_000);
+  assert.equal(resolveTimeout('not a number', 30_000, 600_000), 30_000);
+  assert.equal(resolveTimeout(0, 30_000, 600_000), 30_000);
+  assert.equal(resolveTimeout(-5, 30_000, 600_000), 30_000);
+});
+
+test('a timeout is capped and rounded', () => {
+  assert.equal(resolveTimeout('5000', 30_000, 600_000), 5000);
+  assert.equal(resolveTimeout(1500.6, 30_000, 600_000), 1501);
+  assert.equal(resolveTimeout(9_000_000, 30_000, 600_000), 600_000);
 });

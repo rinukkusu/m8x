@@ -127,9 +127,15 @@ async function readBody(request: NextRequest): Promise<{ value: unknown; tooLarg
   if (request.method === 'GET' || request.method === 'HEAD') return { value: null, tooLarge: false };
 
   const contentType = request.headers.get('content-type') ?? '';
-  const raw = await request.text();
 
-  if (raw.length > MAX_BODY_BYTES) return { value: null, tooLarge: true };
+  // Refuse on the declared length before reading anything. Checking afterwards
+  // would mean the whole body is already in memory by the time we object,
+  // which is most of what the limit is for.
+  const declared = Number(request.headers.get('content-length') ?? Number.NaN);
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return { value: null, tooLarge: true };
+
+  const raw = await readLimitedText(request, MAX_BODY_BYTES);
+  if (raw === null) return { value: null, tooLarge: true };
   if (raw === '') return { value: null, tooLarge: false };
 
   if (contentType.includes('json')) {
@@ -147,6 +153,38 @@ async function readBody(request: NextRequest): Promise<{ value: unknown; tooLarg
   }
 
   return { value: raw, tooLarge: false };
+}
+
+/**
+ * Read the body, stopping at the cap.
+ *
+ * Returns null when the sender goes past it, which covers a chunked request
+ * that declared no length at all, and the sender that declared a small one and
+ * then kept going.
+ */
+async function readLimitedText(request: NextRequest, maxBytes: number): Promise<string | null> {
+  if (!request.body) return '';
+
+  const decoder = new TextDecoder();
+  const reader = request.body.getReader();
+  let size = 0;
+  let text = '';
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      size += value.byteLength;
+      if (size > maxBytes) return null;
+
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+
+  return text + decoder.decode();
 }
 
 export const GET = handle;

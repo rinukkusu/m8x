@@ -3,11 +3,11 @@ import { runWorkflow } from '../runner/index.js';
 import { loadCredentialData } from './credentials.js';
 import { prisma } from './db.js';
 import {
+  claimExecution,
   createExecution,
   createExecutionRecorder,
   failExecution,
   finishExecution,
-  markExecutionRunning,
   restoredOutputsFor,
 } from './executions.js';
 import {
@@ -103,6 +103,13 @@ export async function executeQueued(
     return;
   }
 
+  // The status above was read, not held. Claiming it is the check that counts,
+  // because two workers can reach this line with the same job.
+  if (!(await claimExecution(executionId))) {
+    log(`[worker] execution ${executionId} was claimed by another worker, skipping`);
+    return;
+  }
+
   const graph = (execution.workflowVersion?.graph ?? null) as Graph | null;
   if (!graph) {
     await failExecution(executionId, new Error('The workflow snapshot for this run is missing.'));
@@ -115,8 +122,6 @@ export async function executeQueued(
   const timeout = setTimeout(() => controller.abort(), EXECUTION_TIMEOUT_MS);
 
   try {
-    await markExecutionRunning(executionId);
-
     const restoredOutputs =
       startNodeId && execution.retryOfId ? await restoredOutputsFor(execution.retryOfId) : undefined;
 

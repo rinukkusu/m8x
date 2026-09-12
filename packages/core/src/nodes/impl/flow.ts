@@ -1,5 +1,6 @@
 import { NodeError, type Item, type NodeExecute } from '../../types.js';
 import { evaluateCondition } from '../conditions.js';
+import { readPath } from '../paths.js';
 
 export const executeIf: NodeExecute = async (ctx) => {
     const matched: Item[] = [];
@@ -106,15 +107,6 @@ export const executeSplitOut: NodeExecute = async (ctx) => {
 
     return [out];
   };
-
-function readPath(source: Record<string, unknown>, path: string): unknown {
-  let current: unknown = source;
-  for (const segment of path.split('.')) {
-    if (current === null || current === undefined || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[segment];
-  }
-  return current;
-}
 
 function describeType(value: unknown): string {
   if (value === null) return 'null';
