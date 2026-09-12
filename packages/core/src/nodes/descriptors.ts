@@ -507,6 +507,28 @@ export const switchNode: NodeDescriptor = {
   ],
 };
 
+export const loopOverItemsNode: NodeDescriptor = {
+  type: 'flow.loopOverItems',
+  displayName: 'Loop Over Items',
+  description: 'Runs the Loop branch once per batch, then carries on from Done with everything the branch produced.',
+  group: 'flow',
+  icon: 'Repeat',
+  color: FLOW_COLOR,
+  inputs: 1,
+  outputs: ['loop', 'done'],
+  params: [
+    {
+      name: 'batchSize',
+      displayName: 'Items per batch',
+      type: 'number',
+      default: 1,
+      required: true,
+      description: 'How many items the Loop branch sees at a time.',
+      expression: false,
+    },
+  ],
+};
+
 export const waitNode: NodeDescriptor = {
   type: 'flow.wait',
   displayName: 'Wait',
@@ -1066,6 +1088,7 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   switchNode,
   mergeNode,
   splitOutNode,
+  loopOverItemsNode,
   aggregateNode,
   summarizeNode,
   sortNode,

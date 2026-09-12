@@ -4,6 +4,7 @@ import { executeCode } from './impl/code.js';
 import {
   executeFilter,
   executeIf,
+  executeLoopOverItems,
   executeMerge,
   executeNoOp,
   executeSplitOut,
@@ -58,6 +59,7 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'flow.switch': executeSwitch,
   'flow.merge': executeMerge,
   'flow.splitOut': executeSplitOut,
+  'flow.loopOverItems': executeLoopOverItems,
   'flow.aggregate': executeAggregate,
   'flow.summarize': executeSummarize,
   'flow.sort': executeSort,

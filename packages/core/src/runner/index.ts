@@ -1,12 +1,21 @@
 import { delay } from '../delay.js';
 import { resolveValue, type ExpressionScope } from '../expressions.js';
 import { describeError, errorFingerprint, type ExtractedError } from '../fingerprint.js';
-import { indexGraph, topologicalOrder, validateGraph } from '../graph.js';
+import {
+  analyseLoops,
+  condenseLoops,
+  indexGraph,
+  subgraphOf,
+  topologicalOrder,
+  validateGraph,
+  withoutBackEdges,
+} from '../graph.js';
 import { requireNodeDefinition } from '../nodes/executors.js';
 import { isParamVisible, paramUsesExpressions, resolveOutputs, validateParams } from '../nodes/index.js';
 import {
   NodeError,
   type Graph,
+  type GraphEdge,
   type GraphNode,
   type Item,
   type NodeDefinition,
@@ -31,6 +40,8 @@ export interface NodeStartEvent {
   nodeName: string;
   nodeType: string;
   attempt: number;
+  /** Which pass of a loop produced this. 0 for a node outside any loop. */
+  iteration: number;
   sequence: number;
   input: Item[];
   startedAt: Date;
@@ -42,6 +53,8 @@ export interface NodeFinishEvent {
   nodeName: string;
   nodeType: string;
   attempt: number;
+  /** Which pass of a loop produced this. 0 for a node outside any loop. */
+  iteration: number;
   sequence: number;
   status: NodeRunStatus;
   input: Item[];
@@ -114,6 +127,14 @@ const DEFAULT_RETRY_BACKOFF_MS = 1000;
  */
 const INTERNAL_INPUT_SPLIT = '__inputSplit';
 const INTERNAL_NODE_OUTPUTS = '__nodeOutputs';
+const INTERNAL_LOOP_CURSOR = '__loopCursor';
+const INTERNAL_LOOP_DONE = '__loopDone';
+
+/**
+ * A loop that never empties its batch would otherwise spin until the execution
+ * timeout an hour later, with nothing in the detail view to say why.
+ */
+const MAX_LOOP_ITERATIONS = Number(process.env.M8X_MAX_LOOP_ITERATIONS ?? 1000);
 
 export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
   const startedAt = Date.now();
@@ -139,15 +160,227 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
     };
   }
 
-  const index = indexGraph(ctx.graph);
-  const order = topologicalOrder(ctx.graph);
+  const loops = analyseLoops(ctx.graph);
+  // The runner works on the graph with back-edges removed, which is a DAG
+  // again, and steps over each loop region as a single node in the outer order.
+  const reduced = withoutBackEdges(ctx.graph, loops);
+  const index = indexGraph(reduced);
+  const order = topologicalOrder(condenseLoops(reduced, loops));
   const outputs: Record<string, Item[][]> = { ...(ctx.restoredOutputs ?? {}) };
   /** Nodes that did not run, so downstream nodes know the branch was not taken. */
   const skipped = new Set<string>();
   const now = new Date().toISOString();
 
+  const backEdgesInto = new Map<string, GraphEdge[]>();
+  for (const edge of ctx.graph.edges) {
+    if (!loops.backEdges.has(edge.id)) continue;
+    const bucket = backEdgesInto.get(edge.target);
+    if (bucket) bucket.push(edge);
+    else backEdgesInto.set(edge.target, [edge]);
+  }
+
   let sequence = 0;
-  let startReached = ctx.startNodeId === undefined;
+  // A retry point inside a loop has no meaning the outer order can express, so
+  // one that is not in it re-runs everything rather than silently running
+  // nothing at all.
+  let startReached = ctx.startNodeId === undefined || !order.some((node) => node.id === ctx.startNodeId);
+
+  async function step(node: GraphNode, options: StepOptions = {}): Promise<Step> {
+    const definition = requireNodeDefinition(node.type);
+    const incoming = index.incoming.get(node.id) ?? [];
+    const iteration = options.iteration ?? 0;
+
+    if (node.disabled) {
+      // A disabled node is a pass-through, not a wall. Turning one off to test
+      // around it should not sever the rest of the workflow.
+      const gathered = gatherInput(incoming, outputs, skipped);
+
+      // Unless there was nothing to pass through: a disabled node sitting on a
+      // branch the If rejected must stay skipped, or it would hand the rest of
+      // that branch an empty input and let it fire its side effects.
+      if (!gathered.anyBranchActive && incoming.length > 0) {
+        skipped.add(node.id);
+        await ctx.emit(makeSkipEvent(node, sequence++, 'upstream branch was not taken', iteration));
+        return OK;
+      }
+
+      outputs[node.id] = [gathered.items];
+      await ctx.emit(makeSkipEvent(node, sequence++, 'disabled', iteration));
+      return OK;
+    }
+
+    let input: Item[];
+    let inputSplit = 0;
+
+    if (options.input !== undefined) {
+      // A loop node on its second and later iterations, where the items come
+      // from the cursor rather than from the incoming edges.
+      input = options.input;
+    } else if (definition.inputs === 0) {
+      // Trigger. Only the one the run actually started from produces items.
+      const isEntryPoint = ctx.startNodeId ? node.id === ctx.startNodeId : isRunEntryPoint(node, ctx, order);
+      if (!isEntryPoint) {
+        skipped.add(node.id);
+        await ctx.emit(makeSkipEvent(node, sequence++, 'not the trigger for this run', iteration));
+        return OK;
+      }
+      input = ctx.seedItems;
+    } else {
+      const gathered = gatherInput(incoming, outputs, skipped);
+      input = gathered.items;
+      inputSplit = gathered.firstInputCount;
+
+      if (!gathered.anyBranchActive && incoming.length > 0) {
+        // Every upstream branch feeding this node was skipped, so this one is
+        // on a path that was not taken. Skipping is correct; running with an
+        // empty input would fire side effects on a branch the If rejected.
+        skipped.add(node.id);
+        await ctx.emit(makeSkipEvent(node, sequence++, 'upstream branch was not taken', iteration));
+        return OK;
+      }
+    }
+
+    const continueOnFail = node.continueOnFail === true && options.ignoreContinueOnFail !== true;
+
+    const paramIssues = validateParams(node.id, definition, node.params);
+    if (paramIssues.length > 0) {
+      const message = paramIssues.map((issue) => issue.message).join(' ');
+      const error: ExtractedError = { errorType: 'ConfigurationError', message };
+      await ctx.emit({
+        type: 'nodeFinish',
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeType: node.type,
+        attempt: 1,
+        iteration,
+        sequence: sequence++,
+        status: 'failed',
+        input,
+        error,
+        durationMs: 0,
+        finishedAt: new Date(),
+      });
+      if (!continueOnFail) return { kind: 'failed', failure: toFailure(node, error) };
+      outputs[node.id] = errorOutput(definition, node, error);
+      return OK;
+    }
+
+    const attempt = await runNodeWithRetries({
+      ctx,
+      node,
+      definition,
+      input,
+      inputSplit,
+      loop: options.loop,
+      iteration,
+      outputs,
+      now,
+      nextSequence: () => sequence++,
+    });
+
+    if (attempt.ok) {
+      outputs[node.id] = attempt.output;
+      return OK;
+    }
+
+    if (ctx.signal.aborted) return CANCELLED;
+    if (continueOnFail) {
+      outputs[node.id] = errorOutput(definition, node, attempt.error);
+      return OK;
+    }
+
+    return { kind: 'failed', failure: toFailure(node, attempt.error) };
+  }
+
+  async function runLoop(loop: GraphNode): Promise<Step> {
+    const region = loops.regions.get(loop.id) ?? new Set<string>();
+    const incoming = index.incoming.get(loop.id) ?? [];
+    const entry = gatherInput(incoming, outputs, skipped);
+
+    if (!entry.anyBranchActive && incoming.length > 0) {
+      // The whole region goes with it, or the nodes inside would look like they
+      // simply produced nothing rather than never having been reached.
+      skipped.add(loop.id);
+      await ctx.emit(makeSkipEvent(loop, sequence++, 'upstream branch was not taken', 0));
+      for (const id of region) {
+        const member = index.byId.get(id);
+        if (!member) continue;
+        skipped.add(id);
+        await ctx.emit(makeSkipEvent(member, sequence++, 'upstream branch was not taken', 0));
+      }
+      return OK;
+    }
+
+    const bodyOrder = topologicalOrder(subgraphOf(reduced, new Set([loop.id, ...region]))).filter(
+      (node) => node.id !== loop.id,
+    );
+
+    const state: LoopState = { cursor: 0, done: [] };
+
+    for (let iteration = 1; ; iteration++) {
+      if (ctx.signal.aborted) return CANCELLED;
+
+      if (iteration > MAX_LOOP_ITERATIONS) return await failLoop(loop, iteration);
+
+      // continueOnFail is refused on the loop node itself: carrying on past a
+      // batching failure would iterate on an error item, which is never what
+      // anyone means by it.
+      const result = await step(loop, {
+        input: entry.items,
+        loop: state,
+        iteration,
+        ignoreContinueOnFail: true,
+      });
+      if (result.kind !== 'ok') return result;
+
+      const batch = outputs[loop.id]?.[0] ?? [];
+      if (batch.length === 0) break;
+      state.cursor += batch.length;
+
+      // Start each pass with the region blank. Everything inside traces back to
+      // the loop node, which always runs, so nothing in here is skipped today —
+      // but leaving one pass's output and skip marks lying around for the next
+      // one is the kind of state that goes wrong the moment a node type with
+      // different input rules joins the group.
+      for (const id of region) {
+        delete outputs[id];
+        skipped.delete(id);
+      }
+
+      for (const node of bodyOrder) {
+        if (ctx.signal.aborted) return CANCELLED;
+        const bodyResult = await step(node, { iteration });
+        if (bodyResult.kind !== 'ok') return bodyResult;
+      }
+
+      const back = gatherInput(backEdgesInto.get(loop.id) ?? [], outputs, skipped);
+      if (back.anyBranchActive) state.done.push(...back.items);
+    }
+
+    return OK;
+  }
+
+  async function failLoop(loop: GraphNode, iteration: number): Promise<Step> {
+    const error: ExtractedError = {
+      errorType: 'LoopLimitError',
+      message: `"${loop.name}" ran ${MAX_LOOP_ITERATIONS} times without finishing. Raise M8X_MAX_LOOP_ITERATIONS if that is expected.`,
+    };
+    await ctx.emit({
+      type: 'nodeFinish',
+      nodeId: loop.id,
+      nodeName: loop.name,
+      nodeType: loop.type,
+      attempt: 1,
+      iteration,
+      sequence: sequence++,
+      status: 'failed',
+      input: [],
+      error,
+      durationMs: 0,
+      finishedAt: new Date(),
+    });
+    return { kind: 'failed', failure: toFailure(loop, error) };
+  }
 
   for (const node of order) {
     if (ctx.signal.aborted) {
@@ -165,113 +398,37 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       }
     }
 
-    const definition = requireNodeDefinition(node.type);
-    const incoming = index.incoming.get(node.id) ?? [];
+    const result = loops.regions.has(node.id) ? await runLoop(node) : await step(node);
 
-    if (node.disabled) {
-      // A disabled node is a pass-through, not a wall. Turning one off to test
-      // around it should not sever the rest of the workflow.
-      const gathered = gatherInput(incoming, outputs, skipped);
-
-      // Unless there was nothing to pass through: a disabled node sitting on a
-      // branch the If rejected must stay skipped, or it would hand the rest of
-      // that branch an empty input and let it fire its side effects.
-      if (!gathered.anyBranchActive && incoming.length > 0) {
-        skipped.add(node.id);
-        await ctx.emit(makeSkipEvent(node, sequence++, 'upstream branch was not taken'));
-        continue;
-      }
-
-      outputs[node.id] = [gathered.items];
-      await ctx.emit(makeSkipEvent(node, sequence++, 'disabled'));
-      continue;
-    }
-
-    let input: Item[];
-    let inputSplit = 0;
-
-    if (definition.inputs === 0) {
-      // Trigger. Only the one the run actually started from produces items.
-      const isEntryPoint = ctx.startNodeId ? node.id === ctx.startNodeId : isRunEntryPoint(node, ctx, order);
-      if (!isEntryPoint) {
-        skipped.add(node.id);
-        await ctx.emit(makeSkipEvent(node, sequence++, 'not the trigger for this run'));
-        continue;
-      }
-      input = ctx.seedItems;
-    } else {
-      const gathered = gatherInput(incoming, outputs, skipped);
-      input = gathered.items;
-      inputSplit = gathered.firstInputCount;
-
-      if (!gathered.anyBranchActive && incoming.length > 0) {
-        // Every upstream branch feeding this node was skipped, so this one is
-        // on a path that was not taken. Skipping is correct; running with an
-        // empty input would fire side effects on a branch the If rejected.
-        skipped.add(node.id);
-        await ctx.emit(makeSkipEvent(node, sequence++, 'upstream branch was not taken'));
-        continue;
-      }
-    }
-
-    const paramIssues = validateParams(node.id, definition, node.params);
-    if (paramIssues.length > 0) {
-      const message = paramIssues.map((issue) => issue.message).join(' ');
-      const failure = toFailure(node, { errorType: 'ConfigurationError', message });
-      await ctx.emit({
-        type: 'nodeFinish',
-        nodeId: node.id,
-        nodeName: node.name,
-        nodeType: node.type,
-        attempt: 1,
-        sequence: sequence++,
-        status: 'failed',
-        input,
-        error: { errorType: 'ConfigurationError', message },
-        durationMs: 0,
-        finishedAt: new Date(),
-      });
-      if (!node.continueOnFail) {
-        return { status: 'failed', failure, outputs, durationMs: Date.now() - startedAt };
-      }
-      outputs[node.id] = errorOutput(definition, node, { errorType: 'ConfigurationError', message });
-      continue;
-    }
-
-    const attempt = await runNodeWithRetries({
-      ctx,
-      node,
-      definition,
-      input,
-      inputSplit,
-      outputs,
-      now,
-      nextSequence: () => sequence++,
-    });
-
-    if (attempt.ok) {
-      outputs[node.id] = attempt.output;
-      continue;
-    }
-
-    if (ctx.signal.aborted) {
+    if (result.kind === 'cancelled' || ctx.signal.aborted) {
       return { status: 'cancelled', outputs, durationMs: Date.now() - startedAt };
     }
-
-    if (node.continueOnFail) {
-      outputs[node.id] = errorOutput(definition, node, attempt.error);
-      continue;
+    if (result.kind === 'failed') {
+      return { status: 'failed', failure: result.failure, outputs, durationMs: Date.now() - startedAt };
     }
-
-    return {
-      status: 'failed',
-      failure: toFailure(node, attempt.error),
-      outputs,
-      durationMs: Date.now() - startedAt,
-    };
   }
 
   return { status: 'success', outputs, durationMs: Date.now() - startedAt };
+}
+
+/** How a single node's turn ended, as far as the run is concerned. */
+type Step = { kind: 'ok' } | { kind: 'cancelled' } | { kind: 'failed'; failure: RunFailure };
+
+const OK: Step = { kind: 'ok' };
+const CANCELLED: Step = { kind: 'cancelled' };
+
+interface StepOptions {
+  /** Run with these items instead of gathering them from the incoming edges. */
+  input?: Item[];
+  loop?: LoopState;
+  iteration?: number;
+  ignoreContinueOnFail?: boolean;
+}
+
+/** Where a loop has got to. Held by the runner, never by the node. */
+interface LoopState {
+  cursor: number;
+  done: Item[];
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +441,9 @@ interface RunNodeArgs {
   definition: NodeDefinition;
   input: Item[];
   inputSplit: number;
+  loop?: LoopState;
+  /** Which pass of a loop this is. 0 outside any loop. */
+  iteration: number;
   outputs: Record<string, Item[][]>;
   now: string;
   nextSequence(): number;
@@ -312,6 +472,7 @@ async function runNodeWithRetries(args: RunNodeArgs): Promise<NodeAttempt> {
       nodeName: node.name,
       nodeType: node.type,
       attempt,
+      iteration: args.iteration,
       sequence,
       input: args.input,
       startedAt,
@@ -327,6 +488,7 @@ async function runNodeWithRetries(args: RunNodeArgs): Promise<NodeAttempt> {
         nodeName: node.name,
         nodeType: node.type,
         attempt,
+        iteration: args.iteration,
         sequence,
         status: 'success',
         input: args.input,
@@ -346,6 +508,7 @@ async function runNodeWithRetries(args: RunNodeArgs): Promise<NodeAttempt> {
         nodeName: node.name,
         nodeType: node.type,
         attempt,
+        iteration: args.iteration,
         sequence,
         status: 'failed',
         input: args.input,
@@ -375,6 +538,9 @@ export function isRetryable(error: ExtractedError): boolean {
   if (error.errorType === 'ExpressionError') return false;
   if (error.errorType === 'CancelledError') return false;
   if (error.errorType === 'CodeSyntaxError') return false;
+  // A runaway loop is structural. Running it again just burns another 1000
+  // iterations.
+  if (error.errorType === 'LoopLimitError') return false;
   // 4xx means the request was wrong, not unlucky. 429 is the exception.
   const http = error.errorType.match(/^HttpError(\d{3})$/);
   if (http) {
@@ -424,6 +590,8 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
     getParam<T>(name: string, itemIndex = 0): T {
       if (name === INTERNAL_INPUT_SPLIT) return args.inputSplit as T;
       if (name === INTERNAL_NODE_OUTPUTS) return nodeOutputsByName as T;
+      if (name === INTERNAL_LOOP_CURSOR) return (args.loop?.cursor ?? 0) as T;
+      if (name === INTERNAL_LOOP_DONE) return (args.loop?.done ?? []) as T;
 
       const schema = schemas.get(name);
       const raw = node.params[name];
@@ -567,7 +735,12 @@ function isRunEntryPoint(node: GraphNode, ctx: RunnerContext, order: GraphNode[]
   return firstTrigger?.id === node.id;
 }
 
-function makeSkipEvent(node: GraphNode, sequence: number, reason: string): NodeFinishEvent {
+function makeSkipEvent(
+  node: GraphNode,
+  sequence: number,
+  reason: string,
+  iteration: number,
+): NodeFinishEvent {
   const at = new Date();
   return {
     type: 'nodeFinish',
@@ -575,6 +748,7 @@ function makeSkipEvent(node: GraphNode, sequence: number, reason: string): NodeF
     nodeName: node.name,
     nodeType: node.type,
     attempt: 1,
+    iteration,
     sequence,
     status: 'skipped',
     input: [],

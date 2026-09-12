@@ -36,6 +36,7 @@ export default async function ExecutionDetailPage({ params }: { params: Promise<
     nodeType: run.nodeType,
     status: run.status,
     attempt: run.attempt,
+    iteration: run.iteration,
     sequence: run.sequence,
     durationMs: run.durationMs,
     startedAt: run.startedAt.toISOString(),

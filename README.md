@@ -246,8 +246,14 @@ the gap: the poller's leasing is only exercised by running two workers.
 
 ## Known gaps
 
-- **No loops.** The runner requires a directed acyclic graph and rejects cycles
-  with a named error. A batching node needs real cycle support in the scheduler.
+- **No loops inside loops.** One Loop Over Items node can close a cycle; a
+  second one inside its region is refused by name. The scheduler generalises to
+  nested regions, so this is a validation rule rather than a rewrite.
+- **A Wait is capped at five minutes.** The run is held open for the whole wait.
+  Longer than that needs suspend and resume state the Execution model does not
+  have.
+- **A retry from inside a loop restarts the whole run.** There is nowhere in the
+  outer order to express "start at pass four".
 - **The Code node's network access is not restricted.** See above.
 - **Cancelling only works before a run starts.** Stopping one mid-flight needs
   the worker to cooperate.

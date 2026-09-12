@@ -69,6 +69,25 @@ export const executeSwitch: NodeExecute = async (ctx) => {
     return branches;
   };
 
+/**
+ * A batch of the items being looped over.
+ *
+ * The cursor lives in the runner, not here: `execute` is a plain function and
+ * has to stay one, so the state reaches it as an internal parameter the same way
+ * Merge learns where its second input starts. `ctx.items` is the whole list
+ * being iterated, not the current batch.
+ */
+export const executeLoopOverItems: NodeExecute = async (ctx) => {
+    const size = Math.max(1, Math.floor(Number(ctx.getParam('batchSize') ?? 1)) || 1);
+    const cursor = Number(ctx.getParam('__loopCursor') ?? 0);
+
+    // An empty Loop branch is how the runner knows to stop, and this call is the
+    // one that hands Done everything the branch produced.
+    if (cursor >= ctx.items.length) return [[], ctx.getParam<Item[]>('__loopDone') ?? []];
+
+    return [ctx.items.slice(cursor, cursor + size), []];
+  };
+
 export const executeWait: NodeExecute = async (ctx) => {
     const amount = Number(ctx.getParam('amount') ?? 0);
     const unit = ctx.getParam<string>('unit') ?? 'seconds';

@@ -27,6 +27,8 @@ export interface NodeRunView {
   nodeType: string;
   status: string;
   attempt: number;
+  /** Which pass of a loop this row is. 0 outside any loop. */
+  iteration: number;
   sequence: number;
   durationMs: number | null;
   startedAt: string;
@@ -101,12 +103,18 @@ function ExecutionViewInner({
     return () => clearInterval(timer);
   }, [inFlight, router]);
 
-  /** Latest attempt per node, which is the one whose outcome the canvas shows. */
+  /**
+   * The last run of each node, which is the one whose outcome the canvas shows.
+   *
+   * Last by sequence rather than by attempt: a node inside a loop has one row
+   * per pass, every one of them attempt 1, and the canvas should paint the pass
+   * that ran most recently.
+   */
   const latestByNode = useMemo(() => {
     const map = new Map<string, NodeRunView>();
     for (const run of runs) {
       const current = map.get(run.nodeId);
-      if (!current || run.attempt >= current.attempt) map.set(run.nodeId, run);
+      if (!current || run.sequence >= current.sequence) map.set(run.nodeId, run);
     }
     return map;
   }, [runs]);
@@ -139,9 +147,11 @@ function ExecutionViewInner({
     [graph.edges],
   );
 
+  // Newest first, which for a loop means the last pass rather than an arbitrary
+  // one: every pass carries the same attempt number.
   const selectedRuns = runs
     .filter((run) => run.nodeId === selectedNodeId)
-    .sort((a, b) => b.attempt - a.attempt);
+    .sort((a, b) => b.sequence - a.sequence);
 
   function retry(fromFailedNode: boolean) {
     setError(null);
@@ -246,7 +256,12 @@ function ExecutionViewInner({
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {selectedRuns.map((run, index) => (
-                <NodeRunPanel key={run.id} run={run} isLatest={index === 0} totalAttempts={selectedRuns.length} />
+                <NodeRunPanel
+                    key={run.id}
+                    run={run}
+                    isLatest={index === 0}
+                    showAttempt={selectedRuns.some((candidate) => candidate.attempt > 1)}
+                  />
               ))}
             </div>
           )}
@@ -259,11 +274,11 @@ function ExecutionViewInner({
 function NodeRunPanel({
   run,
   isLatest,
-  totalAttempts,
+  showAttempt,
 }: {
   run: NodeRunView;
   isLatest: boolean;
-  totalAttempts: number;
+  showAttempt: boolean;
 }) {
   const [tab, setTab] = useState<'output' | 'input'>(run.status === 'failed' ? 'input' : 'output');
   const error = run.error as { errorType?: string; message?: string; stack?: string; logs?: Array<{ level: string; message: string }> } | null;
@@ -273,9 +288,10 @@ function NodeRunPanel({
     <div className={cx('border-b border-line', !isLatest && 'opacity-70')}>
       <div className="flex items-center gap-2 px-4 py-2.5">
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{run.nodeName}</span>
-        {totalAttempts > 1 ? (
-          <span className="text-[11px] text-ink-faint">attempt {run.attempt}</span>
+        {run.iteration > 0 ? (
+          <span className="text-[11px] text-ink-faint">pass {run.iteration}</span>
         ) : null}
+        {showAttempt ? <span className="text-[11px] text-ink-faint">attempt {run.attempt}</span> : null}
         <Badge tone={run.status as StatusTone}>{run.status}</Badge>
         <span className="text-[11px] text-ink-faint">{formatDuration(run.durationMs)}</span>
       </div>
