@@ -17,6 +17,19 @@ import { prisma } from './db.js';
  * scan. Every save reconciles them.
  */
 
+/**
+ * Which trigger node types get a row, and what kind of row.
+ *
+ * A map rather than a chain of ternaries, because there is a third kind now and
+ * there will be a fourth. `trigger.manual` is deliberately absent: it has
+ * nothing to resolve, poll or schedule.
+ */
+const TRIGGER_KINDS: Record<string, 'webhook' | 'schedule' | 'telegram' | undefined> = {
+  'trigger.webhook': 'webhook',
+  'trigger.schedule': 'schedule',
+  'trigger.telegram': 'telegram',
+};
+
 export interface SyncResult {
   created: number;
   updated: number;
@@ -34,9 +47,11 @@ export async function syncTriggers(workflowId: string, graph: Graph, active: boo
   const keptNodeIds = new Set<string>();
 
   for (const node of wanted) {
-    if (node.type === 'trigger.manual') continue;
+    const kind = TRIGGER_KINDS[node.type];
+    // Manual has no row, and an unknown trigger type comes from a newer version
+    // of m8x than this one. Neither is something to reconcile.
+    if (!kind) continue;
 
-    const kind = node.type === 'trigger.webhook' ? 'webhook' : 'schedule';
     const webhookPath = kind === 'webhook' ? normalisePath(node.params.path) : null;
 
     if (kind === 'webhook') {

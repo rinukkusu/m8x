@@ -198,7 +198,8 @@ export async function setActiveAction(workflowId: string, active: boolean): Prom
     if (!hasRealTrigger) {
       return {
         ok: false,
-        error: 'Add a Webhook or Schedule trigger before activating. A manual trigger only runs when you click Run.',
+        error:
+          'Add a Webhook, Schedule or Telegram trigger before activating. A manual trigger only runs when you click Run.',
       };
     }
   }

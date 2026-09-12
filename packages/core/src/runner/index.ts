@@ -369,7 +369,7 @@ async function runNodeWithRetries(args: RunNodeArgs): Promise<NodeAttempt> {
  * Retrying a misconfigured node just fails three times more slowly. Only
  * failures that could plausibly be transient are worth another attempt.
  */
-function isRetryable(error: ExtractedError): boolean {
+export function isRetryable(error: ExtractedError): boolean {
   if (error.errorType === 'ConfigurationError') return false;
   if (error.errorType === 'ExpressionError') return false;
   if (error.errorType === 'CancelledError') return false;
@@ -378,6 +378,13 @@ function isRetryable(error: ExtractedError): boolean {
   const http = error.errorType.match(/^HttpError(\d{3})$/);
   if (http) {
     const status = Number(http[1]);
+    return status === 408 || status === 429 || status >= 500;
+  }
+  // Telegram answers with HTTP status codes too, so the same rule applies: a
+  // wrong chat id is a 400 and retrying it three times helps nobody.
+  const telegram = error.errorType.match(/^TelegramError(\d{3})$/);
+  if (telegram) {
+    const status = Number(telegram[1]);
     return status === 408 || status === 429 || status >= 500;
   }
   return true;

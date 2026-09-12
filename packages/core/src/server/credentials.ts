@@ -45,6 +45,11 @@ export const CREDENTIAL_TYPES: CredentialType[] = [
       { name: 'headerValue', displayName: 'Header value', type: 'password', showIf: { authType: ['header'] } },
     ],
   },
+  {
+    type: 'telegramApi',
+    displayName: 'Telegram bot',
+    fields: [{ name: 'botToken', displayName: 'Bot token', type: 'password' }],
+  },
 ];
 
 export interface CredentialSummary {

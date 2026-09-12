@@ -62,17 +62,17 @@ model Folder {
 // ---------------------------------------------------------------------------
 
 model Workflow {
-  id               String            @id @default(cuid())
+  id               String   @id @default(cuid())
   name             String
   folderId         String?
-  folder           Folder?           @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  active           Boolean           @default(false)
+  folder           Folder?  @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  active           Boolean  @default(false)
   // Working copy of the graph. Saved runs point at a WorkflowVersion instead,
   // so history stays readable after the workflow is edited.
   graph            Json
   currentVersionId String?
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   versions   WorkflowVersion[]
   executions Execution[]
@@ -102,6 +102,7 @@ model WorkflowVersion {
 enum TriggerKind {
   webhook
   schedule
+  telegram
 }
 
 model Trigger {
@@ -122,12 +123,35 @@ model Trigger {
   nextRunAt DateTime?
   lastRunAt DateTime?
 
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([workflowId, nodeId])
   @@index([workflowId])
   @@index([kind, enabled, nextRunAt])
+}
+
+// One row per bot, not per trigger.
+//
+// Telegram allows a single getUpdates call per token at a time, and the offset
+// acknowledges updates for the whole bot rather than for one consumer. So the
+// cursor and the lease belong to the credential, and every trigger using that
+// credential is fed from the one poll. That is what lets several workflows
+// share a bot instead of stealing each other's messages.
+model TelegramBot {
+  // The Credential this bot's token lives in. Not a relation: a credential can
+  // be deleted while a workflow still references it, and the poller should skip
+  // that quietly rather than the delete failing.
+  credentialId String    @id
+  // The next update_id to ask Telegram for.
+  offset       BigInt    @default(0)
+  // Held while one worker is mid-poll, so a second worker leaves the bot alone.
+  leaseUntil   DateTime?
+  leaseOwner   String?
+  // Why the last poll failed, so a revoked token is diagnosable.
+  lastError    String?
+  lastPolledAt DateTime?
+  updatedAt    DateTime  @updatedAt
 }
 
 // ---------------------------------------------------------------------------
@@ -150,13 +174,14 @@ enum TriggerSource {
   manual
   webhook
   schedule
+  telegram
   retry
 }
 
 model Execution {
-  id                String          @id @default(cuid())
+  id                String           @id @default(cuid())
   workflowId        String
-  workflow          Workflow        @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  workflow          Workflow         @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   workflowVersionId String?
   workflowVersion   WorkflowVersion? @relation(fields: [workflowVersionId], references: [id], onDelete: SetNull)
 
@@ -201,9 +226,9 @@ enum NodeRunStatus {
 }
 
 model NodeRun {
-  id          String        @id @default(cuid())
+  id          String    @id @default(cuid())
   executionId String
-  execution   Execution     @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
 
   nodeId   String
   nodeName String
@@ -220,8 +245,8 @@ model NodeRun {
 
   // The actual items in and out. This is what makes the execution detail view
   // worth opening. Both are truncated past a size cap.
-  input          Json?
-  output         Json?
+  input           Json?
+  output          Json?
   inputTruncated  Boolean @default(false)
   outputTruncated Boolean @default(false)
 
