@@ -157,7 +157,7 @@ function EditorInner({
   }
 
   function addNode(definition: NodeDescriptor) {
-    const id = crypto.randomUUID();
+    const id = newId();
     // Drop it in the middle of what the user is currently looking at, not at
     // the origin, which may be off screen after panning.
     const position = screenToFlowPosition({
@@ -188,7 +188,7 @@ function EditorInner({
   }
 
   function duplicateNode(source: GraphNode) {
-    const id = crypto.randomUUID();
+    const id = newId();
     const position = { x: source.position.x + 60, y: source.position.y + 60 };
 
     setNodes((current) => [
@@ -219,7 +219,7 @@ function EditorInner({
   const onConnect = useCallback(
     (connection: Connection) =>
       setEdges((current) =>
-        addEdge({ ...connection, type: 'smoothstep', id: crypto.randomUUID() }, current),
+        addEdge({ ...connection, type: 'smoothstep', id: newId() }, current),
       ),
     [setEdges],
   );
@@ -480,6 +480,21 @@ function signature(graph: Graph): string {
       .map((edge) => [edge.source, edge.sourceOutput, edge.target, edge.targetInput].join(':'))
       .sort(),
   });
+}
+
+// `crypto.randomUUID` is only exposed in a secure context, so it is missing when
+// the editor is opened over plain HTTP on a LAN address — a phone reaching the
+// box by IP. Without a fallback every id call throws inside a click handler and
+// the editor silently does nothing. `getRandomValues` is not gated that way.
+function newId(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 function uniqueName(base: string, taken: string[]): string {
