@@ -89,10 +89,13 @@ RUN apk add --no-cache libc6-compat openssl \
  && adduser -u 1001 -S m8x -G m8x
 WORKDIR /app
 
+# This image owns the schema: it is the one container a deployment always has
+# exactly one of. Workers are scaled and must not run DDL. See the entrypoint.
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
     HOSTNAME=0.0.0.0 \
+    M8X_AUTO_MIGRATE=1 \
     M8X_CODE_SANDBOX_PATH=/app/packages/core/src/nodes/impl/code-sandbox.mjs
 
 COPY --from=builder --chown=m8x:m8x /app/apps/web/.next/standalone ./
@@ -101,10 +104,10 @@ COPY --from=builder --chown=m8x:m8x /app/apps/web/.next/static ./apps/web/.next/
 # resolved at runtime rather than imported.
 COPY --from=builder --chown=m8x:m8x /app/node_modules/.prisma ./node_modules/.prisma
 
-# Needed only when M8X_RUN_WORKER_IN_WEB=1 turns this into a single-container
-# deployment: the Prisma CLI so the entrypoint can apply the schema, and the
-# Code node's sandbox, which has to exist as a real file because it is spawned
-# as a separate process and so cannot be bundled.
+# The Prisma CLI and the schema, so the entrypoint can apply it. The Code
+# node's sandbox comes too, for M8X_RUN_WORKER_IN_WEB=1: it has to exist as a
+# real file because it is spawned as a separate process and so cannot be
+# bundled.
 COPY --from=prisma-cli --chown=m8x:m8x /opt/prisma /opt/prisma
 COPY --chown=m8x:m8x packages/core/prisma ./packages/core/prisma
 COPY --chown=m8x:m8x packages/core/src/nodes/impl/code-sandbox.mjs ./packages/core/src/nodes/impl/code-sandbox.mjs
@@ -124,7 +127,10 @@ RUN apk add --no-cache libc6-compat openssl \
  && adduser -u 1001 -S m8x -G m8x
 WORKDIR /app
 
-ENV NODE_ENV=production
+# Never migrates. Several of these can be running at once, and a schema change
+# racing between them is not something the app should make possible.
+ENV NODE_ENV=production \
+    M8X_AUTO_MIGRATE=0
 
 # The whole installed tree, not just the root node_modules. npm nests a
 # dependency whenever two workspaces need different versions of it, and core

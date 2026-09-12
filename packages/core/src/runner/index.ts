@@ -170,8 +170,18 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
     if (node.disabled) {
       // A disabled node is a pass-through, not a wall. Turning one off to test
       // around it should not sever the rest of the workflow.
-      const input = gatherInput(incoming, outputs, skipped).items;
-      outputs[node.id] = [input];
+      const gathered = gatherInput(incoming, outputs, skipped);
+
+      // Unless there was nothing to pass through: a disabled node sitting on a
+      // branch the If rejected must stay skipped, or it would hand the rest of
+      // that branch an empty input and let it fire its side effects.
+      if (!gathered.anyBranchActive && incoming.length > 0) {
+        skipped.add(node.id);
+        await ctx.emit(makeSkipEvent(node, sequence++, 'upstream branch was not taken'));
+        continue;
+      }
+
+      outputs[node.id] = [gathered.items];
       await ctx.emit(makeSkipEvent(node, sequence++, 'disabled'));
       continue;
     }

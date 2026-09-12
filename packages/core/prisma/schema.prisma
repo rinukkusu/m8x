@@ -21,7 +21,10 @@ model User {
 }
 
 model Session {
-  id        String   @id @default(cuid())
+  // No cuid default on purpose: this id is the session cookie, so it is a
+  // bearer credential and has to come from the CSPRNG. The application supplies
+  // it, and leaving the default off means a caller that forgets cannot compile.
+  id        String   @id
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime

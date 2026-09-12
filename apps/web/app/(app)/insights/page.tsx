@@ -100,7 +100,9 @@ export default async function InsightsPage() {
             <section className="space-y-3">
               <div>
                 <h2 className="text-sm font-semibold text-ink">Slowest node types</h2>
-                <p className="mt-0.5 text-xs text-ink-faint">Average time spent per node type across all runs.</p>
+                <p className="mt-0.5 text-xs text-ink-faint">
+                  Average time spent per node type, across the same {WINDOW_DAYS} days.
+                </p>
               </div>
 
               <div className="overflow-hidden rounded-lg border border-line">

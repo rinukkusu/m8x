@@ -220,11 +220,21 @@ export function createExecutionRecorder(executionId: string) {
   };
 }
 
-export async function markExecutionRunning(executionId: string): Promise<void> {
-  await prisma.execution.update({
-    where: { id: executionId },
+/**
+ * Take ownership of a queued execution, returning false when someone else
+ * already has it.
+ *
+ * Conditional on the row still being `queued`, so two workers handed the same
+ * job by a duplicate delivery cannot both run it and fire every side effect
+ * twice. Reading the status and then writing it would leave exactly that gap.
+ */
+export async function claimExecution(executionId: string): Promise<boolean> {
+  const { count } = await prisma.execution.updateMany({
+    where: { id: executionId, status: 'queued' },
     data: { status: 'running', startedAt: new Date() },
   });
+
+  return count === 1;
 }
 
 export async function finishExecution(executionId: string, result: RunResult): Promise<void> {

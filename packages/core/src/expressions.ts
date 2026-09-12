@@ -56,9 +56,23 @@ function tokenise(src: string): Token[] {
 
     if (ch >= '0' && ch <= '9') {
       let j = i;
-      while (j < src.length && /[0-9._]/.test(src[j]!)) j++;
+      let seenDot = false;
+      while (j < src.length) {
+        const digit = src[j]!;
+        if (digit >= '0' && digit <= '9') {
+          j++;
+        } else if (digit === '_') {
+          j++;
+        } else if (digit === '.' && !seenDot) {
+          // The second dot in `1.2.3` is member access on a number, not part of
+          // the literal, and neither is a trailing one.
+          seenDot = true;
+          j++;
+        } else {
+          break;
+        }
+      }
       let raw = src.slice(i, j);
-      // A trailing dot is member access on a number, not part of the literal.
       if (raw.endsWith('.')) {
         raw = raw.slice(0, -1);
         j--;
@@ -334,7 +348,9 @@ function evaluate(node: Node, scope: ExpressionScope): unknown {
       return node.value;
 
     case 'var': {
-      if (!(node.name in scope)) {
+      // `in` would walk the prototype chain, so `constructor` and `toString`
+      // would resolve to Object's own members instead of being unknown.
+      if (!Object.hasOwn(scope, node.name)) {
         throw new ExpressionError(`Unknown variable ${node.name}`);
       }
       return (scope as unknown as Record<string, unknown>)[node.name];

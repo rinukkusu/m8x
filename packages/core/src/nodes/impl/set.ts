@@ -1,4 +1,5 @@
 import type { Item, NodeExecute } from '../../types.js';
+import { writePath } from '../paths.js';
 
 export const executeSet: NodeExecute = async (ctx) => {
     const keepOnlySet = ctx.getParam<boolean>('keepOnlySet') === true;
@@ -29,19 +30,3 @@ export const executeSet: NodeExecute = async (ctx) => {
 
     return [out];
   };
-
-function writePath(target: Record<string, unknown>, path: string, value: unknown): void {
-  const segments = path.split('.');
-  let current = target;
-
-  for (let i = 0; i < segments.length - 1; i++) {
-    const segment = segments[i]!;
-    const next = current[segment];
-    if (!next || typeof next !== 'object' || Array.isArray(next)) {
-      current[segment] = {};
-    }
-    current = current[segment] as Record<string, unknown>;
-  }
-
-  current[segments[segments.length - 1]!] = value;
-}
