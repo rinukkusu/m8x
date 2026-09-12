@@ -72,7 +72,7 @@ async function handle(request: NextRequest, context: { params: Promise<{ path: s
     ],
   });
 
-  if (config.respond !== 'whenFinished') {
+  if (config.respond !== 'whenFinished' && config.respond !== 'usingRespondNode') {
     return NextResponse.json({ executionId, status: 'queued' }, { status: 202 });
   }
 
@@ -85,6 +85,11 @@ async function handle(request: NextRequest, context: { params: Promise<{ path: s
     );
   }
 
+  if (config.respond === 'usingRespondNode' && finished.status !== 'failed') {
+    const composed = await composedResponse(executionId);
+    if (composed) return composed;
+  }
+
   return NextResponse.json(
     {
       executionId,
@@ -95,6 +100,50 @@ async function handle(request: NextRequest, context: { params: Promise<{ path: s
     },
     { status: finished.status === 'failed' ? 500 : 200 },
   );
+}
+
+/**
+ * The response a Respond to Webhook node wrote, if the run reached one.
+ *
+ * Read off the stored NodeRun rather than passed back from the runner, because
+ * the runner does not know a request is open and may not even be in this
+ * process. Returns null when there is nothing usable, and the caller falls back
+ * to the plain envelope: a silently truncated body would be worse than an
+ * honest "the workflow ran" reply.
+ */
+async function composedResponse(executionId: string): Promise<NextResponse | null> {
+  const run = await prisma.nodeRun.findFirst({
+    where: { executionId, nodeType: 'action.respondToWebhook', status: 'success' },
+    orderBy: { sequence: 'desc' },
+    select: { output: true, outputTruncated: true },
+  });
+
+  if (!run || run.outputTruncated) return null;
+
+  const first = Array.isArray(run.output) ? (run.output[0] as { json?: ComposedResponse } | undefined) : undefined;
+  const response = first?.json;
+  if (!response) return null;
+
+  const headers: Record<string, string> = {
+    ...(response.headers ?? {}),
+    'content-type': response.contentType ?? 'application/json',
+  };
+
+  const status = response.status ?? 200;
+  const body = response.body;
+
+  if (body === null || body === undefined) return new NextResponse(null, { status, headers });
+
+  // An object body with a JSON content type is the common case and should not
+  // arrive as "[object Object]".
+  return new NextResponse(typeof body === 'string' ? body : JSON.stringify(body), { status, headers });
+}
+
+interface ComposedResponse {
+  status?: number;
+  contentType?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
 }
 
 /**

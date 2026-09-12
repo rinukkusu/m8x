@@ -22,6 +22,7 @@ import {
   executeSummarize,
 } from './impl/items.js';
 import { executeExtractHtml, executeXmlToJson } from './impl/markup.js';
+import { executeRespondToWebhook } from './impl/respond.js';
 import { executeSet } from './impl/set.js';
 import { executeExecuteWorkflow } from './impl/sub-workflow.js';
 import {
@@ -51,6 +52,7 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'action.code': executeCode,
   'action.set': executeSet,
   'action.executeWorkflow': executeExecuteWorkflow,
+  'action.respondToWebhook': executeRespondToWebhook,
   'action.parseCsv': executeParseCsv,
   'action.toCsv': executeToCsv,
   'action.extractHtml': executeExtractHtml,

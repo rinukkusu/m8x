@@ -137,10 +137,11 @@ export const webhookTrigger: NodeDescriptor = {
       type: 'select',
       default: 'immediately',
       description:
-        'Immediately returns 202 and runs in the background. Waiting holds the request open until the workflow finishes.',
+        'Immediately returns 202 and runs in the background. The other two hold the request open until the workflow finishes.',
       options: [
         { label: 'Immediately', value: 'immediately' },
         { label: 'When the workflow finishes', value: 'whenFinished' },
+        { label: 'With a Respond to Webhook node', value: 'usingRespondNode' },
       ],
       expression: false,
     },
@@ -764,6 +765,50 @@ export const summarizeNode: NodeDescriptor = {
   ],
 };
 
+export const respondToWebhookNode: NodeDescriptor = {
+  type: 'action.respondToWebhook',
+  displayName: 'Respond to Webhook',
+  description: 'Decides what the caller gets back. Put it last, and set the trigger to respond with a node.',
+  group: 'action',
+  icon: 'Reply',
+  color: '#22c55e',
+  inputs: 1,
+  // What comes out is the response itself, which is why this belongs at the end
+  // of its branch rather than in the middle of one.
+  outputs: [''],
+  params: [
+    {
+      name: 'body',
+      displayName: 'Body',
+      type: 'text',
+      placeholder: '{{ $json }}',
+      description: 'Sent as it is. A JSON content type is written out as JSON.',
+    },
+    {
+      name: 'contentType',
+      displayName: 'Send as',
+      type: 'select',
+      default: 'application/json',
+      options: [
+        { label: 'JSON', value: 'application/json' },
+        { label: 'Plain text', value: 'text/plain' },
+        { label: 'HTML', value: 'text/html' },
+        { label: 'XML', value: 'application/xml' },
+      ],
+      expression: false,
+    },
+    { name: 'status', displayName: 'Status code', type: 'number', default: 200, expression: false },
+    {
+      name: 'headers',
+      displayName: 'Extra headers',
+      type: 'keyValue',
+      default: [],
+      keyPlaceholder: 'header',
+      valuePlaceholder: 'value',
+    },
+  ],
+};
+
 /** The slate the data-shaping nodes share. */
 const DATA_COLOR = '#0ea5e9';
 
@@ -1277,6 +1322,7 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   code,
   setNode,
   executeWorkflowNode,
+  respondToWebhookNode,
   parseCsvNode,
   toCsvNode,
   extractHtmlNode,
