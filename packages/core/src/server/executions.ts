@@ -22,10 +22,13 @@ const MAX_ITEMS_STORED = 50;
 
 export interface CreateExecutionInput {
   workflowId: string;
-  trigger: 'manual' | 'webhook' | 'schedule' | 'retry';
+  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'retry';
   /** Items handed to the trigger node. */
   input?: Item[];
-  /** Node the run should start from. Only set by retries. */
+  /**
+   * Node the run should start from. Retries set it, and so does any trigger
+   * that knows which of several trigger nodes fired.
+   */
   startNodeId?: string;
   retryOfId?: string;
 }

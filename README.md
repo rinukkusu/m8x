@@ -7,9 +7,13 @@ into failures are all part of the thing, not part of a paid tier.
 
 - **A visual editor.** A node graph on a canvas, with a parameter panel
   generated from each node's schema.
-- **Ten built-in nodes.** Manual, Webhook and Schedule triggers; HTTP Request,
-  Code and Set; If, Filter, Merge and Split Out. The Code node is the escape
-  hatch for everything else.
+- **Built-in nodes.** Manual, Webhook, Schedule and Telegram triggers; HTTP
+  Request, Code and Set; seven Telegram actions; If, Filter, Merge and Split
+  Out. The Code node is the escape hatch for everything else.
+- **Telegram bots, shared properly.** A bot is polled once and its messages are
+  handed to every workflow listening for them, so one bot can back five
+  workflows with different command filters instead of one workflow monopolising
+  it.
 - **Folders.** A real tree, with drag and drop, and a materialised path so
   filtering a subtree is one indexed query.
 - **Execution history that is worth opening.** Every node run stores the exact
@@ -208,6 +212,7 @@ fix before letting untrusted people write workflows.
 | `M8X_AUTO_MIGRATE` | `1` in the web image, `0` in the worker; override to move who applies the schema |
 | `M8X_RUN_WORKER_IN_WEB` | set to `1` to run the worker inside the web server |
 | `M8X_CODE_SANDBOX_PATH` | override for the Code node's sandbox script; both images set it already |
+| `M8X_TELEGRAM_API_BASE` | override for `https://api.telegram.org`, for a local Bot API server or an egress proxy |
 
 ## Images
 
@@ -231,8 +236,13 @@ npm test
 
 The suite covers the runner: topological ordering, item fan-out through
 branches, retry and backoff, expression evaluation and its sandbox limits, and
-error fingerprinting. Those are the places where a subtle bug is expensive and
-a test is cheap.
+error fingerprinting. It also covers the pure half of the Telegram nodes, which
+is the payload each one builds and the rules deciding which triggers an incoming
+update belongs to. Those are the places where a subtle bug is expensive and a
+test is cheap.
+
+Nothing here talks to a network or a database, which is deliberate and is also
+the gap: the poller's leasing is only exercised by running two workers.
 
 ## Known gaps
 

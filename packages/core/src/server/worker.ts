@@ -18,6 +18,7 @@ import {
   stopQueue,
   type ExecuteJob,
 } from './queue.js';
+import { startTelegramPoller, stopTelegramPoller } from './telegram-poller.js';
 import { claimDueSchedules } from './triggers.js';
 
 /**
@@ -64,12 +65,20 @@ export async function startWorker(options: StartWorkerOptions = {}): Promise<voi
 
   await ensureSchedulerTick();
 
+  // Telegram is long polling rather than a queued tick, so it runs as its own
+  // loop beside the queue. Starting it here means it works unchanged in the
+  // single-container arrangement, the same as everything else.
+  startTelegramPoller(log);
+
   log(`[worker] ready, ${concurrency} executions at a time`);
 }
 
 export async function stopWorker(): Promise<void> {
   if (!started) return;
   started = false;
+  // Before the queue, so a poll in flight cannot queue an execution into a
+  // pg-boss instance that is already shutting down.
+  await stopTelegramPoller();
   // Graceful, so in-flight executions finish instead of being stranded in
   // `running` for the next boot to clean up.
   await stopQueue();

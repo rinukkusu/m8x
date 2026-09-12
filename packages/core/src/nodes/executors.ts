@@ -4,6 +4,15 @@ import { executeCode } from './impl/code.js';
 import { executeFilter, executeIf, executeMerge, executeSplitOut } from './impl/flow.js';
 import { executeHttpRequest } from './impl/http-request.js';
 import { executeSet } from './impl/set.js';
+import {
+  executeTelegramAnswerCallbackQuery,
+  executeTelegramApi,
+  executeTelegramDeleteMessage,
+  executeTelegramEditMessageText,
+  executeTelegramSendDocument,
+  executeTelegramSendMessage,
+  executeTelegramSendPhoto,
+} from './impl/telegram.js';
 import { executePassThrough } from './impl/triggers.js';
 
 /**
@@ -17,9 +26,17 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'trigger.manual': executePassThrough,
   'trigger.webhook': executePassThrough,
   'trigger.schedule': executePassThrough,
+  'trigger.telegram': executePassThrough,
   'action.httpRequest': executeHttpRequest,
   'action.code': executeCode,
   'action.set': executeSet,
+  'action.telegram.sendMessage': executeTelegramSendMessage,
+  'action.telegram.sendPhoto': executeTelegramSendPhoto,
+  'action.telegram.sendDocument': executeTelegramSendDocument,
+  'action.telegram.editMessageText': executeTelegramEditMessageText,
+  'action.telegram.deleteMessage': executeTelegramDeleteMessage,
+  'action.telegram.answerCallbackQuery': executeTelegramAnswerCallbackQuery,
+  'action.telegram.api': executeTelegramApi,
   'flow.if': executeIf,
   'flow.filter': executeFilter,
   'flow.merge': executeMerge,

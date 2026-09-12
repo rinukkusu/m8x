@@ -7,7 +7,7 @@ import { findCycle, topologicalOrder } from '../graph.js';
 import { compare } from '../nodes/conditions.js';
 import { resolveTimeout } from '../nodes/params.js';
 import type { Graph, GraphEdge, GraphNode, Item } from '../types.js';
-import { runWorkflow, type RunEvent } from './index.js';
+import { isRetryable, runWorkflow, type RunEvent } from './index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -527,4 +527,21 @@ test('a timeout is capped and rounded', () => {
   assert.equal(resolveTimeout('5000', 30_000, 600_000), 5000);
   assert.equal(resolveTimeout(1500.6, 30_000, 600_000), 1501);
   assert.equal(resolveTimeout(9_000_000, 30_000, 600_000), 600_000);
+});
+
+// ---------------------------------------------------------------------------
+// Retry classification
+// ---------------------------------------------------------------------------
+
+test('a Telegram 4xx is not retried, a 429 and a 5xx are', () => {
+  // Telegram answers with HTTP status codes, so it follows the same rule as
+  // the HTTP node: a wrong chat id will still be wrong on the third attempt.
+  const failing = (errorType: string) => isRetryable({ errorType, message: 'x' });
+
+  assert.equal(failing('TelegramError400'), false);
+  assert.equal(failing('TelegramError403'), false);
+  assert.equal(failing('TelegramError429'), true);
+  assert.equal(failing('TelegramError500'), true);
+  // Reaching Telegram at all is worth another go.
+  assert.equal(failing('TelegramNetworkError'), true);
 });
