@@ -1,6 +1,7 @@
 import type { NodeDefinition, NodeExecute } from '../types.js';
 import * as descriptors from './descriptors.js';
 import { executeCode } from './impl/code.js';
+import { executeParseCsv, executeToCsv } from './impl/csv.js';
 import {
   executeFilter,
   executeIf,
@@ -20,6 +21,7 @@ import {
   executeSort,
   executeSummarize,
 } from './impl/items.js';
+import { executeExtractHtml, executeXmlToJson } from './impl/markup.js';
 import { executeSet } from './impl/set.js';
 import { executeExecuteWorkflow } from './impl/sub-workflow.js';
 import {
@@ -49,6 +51,10 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'action.code': executeCode,
   'action.set': executeSet,
   'action.executeWorkflow': executeExecuteWorkflow,
+  'action.parseCsv': executeParseCsv,
+  'action.toCsv': executeToCsv,
+  'action.extractHtml': executeExtractHtml,
+  'action.xmlToJson': executeXmlToJson,
   'action.telegram.sendMessage': executeTelegramSendMessage,
   'action.telegram.sendPhoto': executeTelegramSendPhoto,
   'action.telegram.sendDocument': executeTelegramSendDocument,
