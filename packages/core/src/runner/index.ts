@@ -14,6 +14,7 @@ import { requireNodeDefinition } from '../nodes/executors.js';
 import { isParamVisible, paramUsesExpressions, resolveOutputs, validateParams } from '../nodes/index.js';
 import {
   NodeError,
+  type BinaryData,
   type Graph,
   type GraphEdge,
   type GraphNode,
@@ -121,6 +122,12 @@ export interface RunnerContext {
   signal: AbortSignal;
   /** Decrypt a credential by its id. Injected so core stays database-free. */
   loadCredential(credentialId: string): Promise<Record<string, string> | null>;
+  /**
+   * The binary store, injected for the same reason. Absent in a bare runner,
+   * where a node asking for bytes gets a clear failure rather than a crash.
+   */
+  readBinary?(binary: BinaryData): Promise<Uint8Array>;
+  writeBinary?(input: { bytes: Uint8Array; mimeType: string; fileName?: string }): Promise<BinaryData>;
   /**
    * Run another workflow. Injected for the same reason as loadCredential: the
    * child needs an execution row, and core does not touch the database.
@@ -744,6 +751,21 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
       const id = node.params[paramName];
       if (typeof id !== 'string' || id === '') return null;
       return ctx.loadCredential(id);
+    },
+
+    async readBinary(binary: BinaryData) {
+      if (typeof binary.data === 'string') return Buffer.from(binary.data, 'base64');
+      if (!ctx.readBinary) {
+        throw new NodeError('BinaryError', 'Stored files are not available here.');
+      }
+      return ctx.readBinary(binary);
+    },
+
+    async writeBinary(input) {
+      if (!ctx.writeBinary) {
+        throw new NodeError('BinaryError', 'Storing files is not available here.');
+      }
+      return ctx.writeBinary(input);
     },
 
     logger: {

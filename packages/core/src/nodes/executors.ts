@@ -2,6 +2,7 @@ import type { NodeDefinition, NodeExecute } from '../types.js';
 import * as descriptors from './descriptors.js';
 import { executeCode } from './impl/code.js';
 import { executeParseCsv, executeToCsv } from './impl/csv.js';
+import { sendEmail } from './impl/email.js';
 import {
   executeFilter,
   executeIf,
@@ -48,6 +49,8 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'trigger.webhook': executePassThrough,
   'trigger.schedule': executePassThrough,
   'trigger.telegram': executePassThrough,
+  'trigger.email': executePassThrough,
+  'action.email.send': sendEmail,
   'action.httpRequest': executeHttpRequest,
   'action.code': executeCode,
   'action.set': executeSet,

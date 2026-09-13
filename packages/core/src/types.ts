@@ -10,11 +10,24 @@ export interface Item {
   binary?: Record<string, BinaryData>;
 }
 
+/**
+ * A file travelling with an item.
+ *
+ * The bytes are either inline or in the binary store, never both. Storing them
+ * is the default for anything that arrives from outside: `Execution.input` is
+ * the payload the worker reads back on every run and every retry, so a 15 MB
+ * attachment inlined there would be kept forever and re-read each time. A `ref`
+ * keeps the item small and loads the bytes only when a node asks for them.
+ */
 export interface BinaryData {
   mimeType: string;
   fileName?: string;
-  /** base64 */
-  data: string;
+  /** Decoded length. Set on both forms, so size can be checked without loading. */
+  size?: number;
+  /** base64, when the bytes travel inside the item. */
+  data?: string;
+  /** Id in the binary store, when they do not. */
+  ref?: string;
 }
 
 /** One array of items per output branch. Index 0 is the first branch. */
@@ -96,6 +109,20 @@ export interface NodeExecuteContext {
 
   /** Decrypted credential data, or null when none is selected. */
   getCredential(paramName: string): Promise<Record<string, string> | null>;
+
+  /**
+   * The bytes behind a binary, whether it carries them inline or by reference.
+   * Loading is explicit so a node that only reads file names never pulls the
+   * attachments off the database.
+   */
+  readBinary(binary: BinaryData): Promise<Uint8Array>;
+
+  /**
+   * Put bytes in the store and get back a binary that refers to them. Use this
+   * rather than base64 in the item for anything that did not come from a
+   * parameter the author typed.
+   */
+  writeBinary(input: { bytes: Uint8Array; mimeType: string; fileName?: string }): Promise<BinaryData>;
 
   /**
    * Run another workflow and return the items it ended with.

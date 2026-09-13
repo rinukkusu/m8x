@@ -7,8 +7,10 @@ import {
   type SubWorkflowRequest,
   type SubWorkflowResult,
 } from '../runner/index.js';
+import { getBinary, pruneOrphanBinaries, putBinary } from './binary.js';
 import { loadCredentialData } from './credentials.js';
 import { prisma } from './db.js';
+import { startEmailPoller, stopEmailPoller } from './email-poller.js';
 import {
   claimExecution,
   createExecution,
@@ -76,6 +78,9 @@ export async function startWorker(options: StartWorkerOptions = {}): Promise<voi
   // loop beside the queue. Starting it here means it works unchanged in the
   // single-container arrangement, the same as everything else.
   startTelegramPoller(log);
+  // IMAP is polled on its own interval for the same reason: it is not queue
+  // work, and it has to keep running between executions.
+  startEmailPoller(log);
 
   log(`[worker] ready, ${concurrency} executions at a time`);
 }
@@ -86,6 +91,7 @@ export async function stopWorker(): Promise<void> {
   // Before the queue, so a poll in flight cannot queue an execution into a
   // pg-boss instance that is already shutting down.
   await stopTelegramPoller();
+  await stopEmailPoller();
   // Graceful, so in-flight executions finish instead of being stranded in
   // `running` for the next boot to clean up.
   await stopQueue();
@@ -189,6 +195,10 @@ async function runClaimedExecution(
       restoredOutputs,
       signal: controller.signal,
       loadCredential: loadCredentialData,
+      readBinary: getBinary,
+      // Owned by this execution from the moment a node makes it, so it is
+      // cleaned up with the run even if nothing ends up referring to it.
+      writeBinary: (input) => putBinary({ ...input, executionId }),
       runWorkflowById: (request) => runSubWorkflow(request, executionId, log),
       subWorkflowDepth: options.depth ?? MAX_SUBWORKFLOW_DEPTH,
       subWorkflowStack: options.stack,
@@ -281,6 +291,12 @@ async function runSubWorkflow(
  * double-fire a schedule.
  */
 export async function tickScheduler(log: (message: string) => void = console.info): Promise<void> {
+  // Stored files whose run never got queued have nothing to delete them, and
+  // the minute tick is the only thing in the system that runs regardless of
+  // whether any workflow does. The query is indexed and matches nothing on a
+  // normal tick.
+  await pruneOrphanBinaries().catch((error: unknown) => console.error('[worker] binary prune failed', error));
+
   const due = await claimDueSchedules();
   if (due.length === 0) return;
 

@@ -50,6 +50,72 @@ export const CREDENTIAL_TYPES: CredentialType[] = [
     displayName: 'Telegram bot',
     fields: [{ name: 'botToken', displayName: 'Bot token', type: 'password' }],
   },
+  // Receiving and sending are separate credentials rather than one mail
+  // account, because the two run on different hosts and ports at most
+  // providers, and plenty of setups have only one of them.
+  {
+    type: 'imap',
+    displayName: 'IMAP (incoming mail)',
+    fields: [
+      { name: 'host', displayName: 'Host', type: 'string' },
+      { name: 'port', displayName: 'Port', type: 'string' },
+      {
+        name: 'security',
+        displayName: 'Security',
+        type: 'select',
+        options: [
+          { label: 'TLS (usually port 993)', value: 'tls' },
+          { label: 'STARTTLS (usually port 143)', value: 'starttls' },
+          { label: 'None', value: 'none' },
+        ],
+      },
+      { name: 'user', displayName: 'Username', type: 'string' },
+      { name: 'password', displayName: 'Password', type: 'password' },
+      {
+        name: 'allowSelfSigned',
+        displayName: 'Accept self-signed certificates',
+        type: 'select',
+        options: [
+          { label: 'No', value: 'no' },
+          { label: 'Yes', value: 'yes' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'smtp',
+    displayName: 'SMTP (outgoing mail)',
+    fields: [
+      { name: 'host', displayName: 'Host', type: 'string' },
+      { name: 'port', displayName: 'Port', type: 'string' },
+      {
+        name: 'security',
+        displayName: 'Security',
+        type: 'select',
+        options: [
+          { label: 'TLS (usually port 465)', value: 'tls' },
+          { label: 'STARTTLS (usually port 587)', value: 'starttls' },
+          { label: 'None', value: 'none' },
+        ],
+      },
+      { name: 'user', displayName: 'Username', type: 'string' },
+      { name: 'password', displayName: 'Password', type: 'password' },
+      {
+        name: 'from',
+        displayName: 'Default From',
+        type: 'string',
+      },
+      {
+        name: 'allowSelfSigned',
+        displayName: 'Accept self-signed certificates',
+        type: 'select',
+        options: [
+          { label: 'No', value: 'no' },
+          { label: 'Yes', value: 'yes' },
+        ],
+      },
+    ],
+  },
 ];
 
 export interface CredentialSummary {

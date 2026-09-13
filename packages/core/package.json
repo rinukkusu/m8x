@@ -22,11 +22,16 @@
     "cheerio": "^1.2.0",
     "cron-parser": "^4.9.0",
     "fast-xml-parser": "^5.11.1",
+    "imapflow": "^2.0.2",
+    "mailparser": "^3.9.26",
+    "nodemailer": "^10.0.9",
     "pg-boss": "^10.1.5",
     "prisma": "^6.3.1"
   },
   "devDependencies": {
+    "@types/mailparser": "^3.4.6",
     "@types/node": "^22.13.1",
+    "@types/nodemailer": "^8.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }

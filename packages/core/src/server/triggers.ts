@@ -24,10 +24,11 @@ import { prisma } from './db.js';
  * there will be a fourth. `trigger.manual` is deliberately absent: it has
  * nothing to resolve, poll or schedule.
  */
-const TRIGGER_KINDS: Record<string, 'webhook' | 'schedule' | 'telegram' | undefined> = {
+const TRIGGER_KINDS: Record<string, 'webhook' | 'schedule' | 'telegram' | 'email' | undefined> = {
   'trigger.webhook': 'webhook',
   'trigger.schedule': 'schedule',
   'trigger.telegram': 'telegram',
+  'trigger.email': 'email',
 };
 
 export interface SyncResult {

@@ -103,6 +103,7 @@ enum TriggerKind {
   webhook
   schedule
   telegram
+  email
 }
 
 model Trigger {
@@ -138,6 +139,35 @@ model Trigger {
 // cursor and the lease belong to the credential, and every trigger using that
 // credential is fed from the one poll. That is what lets several workflows
 // share a bot instead of stealing each other's messages.
+// One row per mailbox being watched, shared by every trigger pointing at it,
+// for the same reason TelegramBot is shared by every trigger on one bot: the
+// cursor belongs to the mailbox, not to the workflow reading it.
+model MailFolder {
+  // The Credential holding the IMAP login. Not a relation, matching TelegramBot:
+  // deleting a credential a workflow still names should not fail.
+  credentialId String
+  folder       String
+
+  // Highest UID already turned into executions. The next poll asks for what is
+  // above it.
+  lastUid     BigInt  @default(0)
+  // UIDs are stable only while this is unchanged. When a server changes it,
+  // every stored UID means something else, so the mailbox is resynced from its
+  // current end rather than replayed from the start.
+  uidValidity BigInt?
+
+  // Held while one worker is mid-poll, so a second worker leaves it alone.
+  leaseUntil   DateTime?
+  leaseOwner   String?
+  // Why the last poll failed, so a wrong password or a blocked port is
+  // diagnosable without reading the worker log.
+  lastError    String?
+  lastPolledAt DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@id([credentialId, folder])
+}
+
 model TelegramBot {
   // The Credential this bot's token lives in. Not a relation: a credential can
   // be deleted while a workflow still references it, and the poller should skip
@@ -175,6 +205,7 @@ enum TriggerSource {
   webhook
   schedule
   telegram
+  email
   retry
   subworkflow
 }
@@ -222,12 +253,43 @@ model Execution {
   retries   Execution[] @relation("ExecutionRetry")
 
   nodeRuns NodeRun[]
+  binaries BinaryObject[]
 
   @@index([workflowId, queuedAt(sort: Desc)])
   @@index([status, queuedAt(sort: Desc)])
   @@index([errorFingerprint, queuedAt(sort: Desc)])
   @@index([queuedAt(sort: Desc)])
   @@index([parentExecutionId])
+}
+
+// ---------------------------------------------------------------------------
+// Binary objects
+//
+// File bytes that travel with an item live here rather than inside it.
+// Execution.input is the real payload, read back on every run and every retry,
+// and NodeRun payloads are capped at 64 kB, so an attachment held inline would
+// either bloat the database permanently or be truncated into uselessness.
+// Items carry a `ref` to one of these rows and load the bytes on demand.
+// ---------------------------------------------------------------------------
+
+model BinaryObject {
+  id String @id @default(cuid())
+
+  // Nullable because the row is written before the execution that refers to it
+  // exists: a poller stores the attachments, then seeds the run. Rows left
+  // unclaimed by a run that never got queued are pruned by age.
+  executionId String?
+  execution   Execution? @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  mimeType String
+  fileName String?
+  size     Int
+  bytes    Bytes
+
+  createdAt DateTime @default(now())
+
+  @@index([executionId])
+  @@index([createdAt])
 }
 
 enum NodeRunStatus {
