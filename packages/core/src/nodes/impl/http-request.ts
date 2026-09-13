@@ -1,5 +1,5 @@
 import { NodeError, type Item, type NodeExecute, type NodeExecuteContext } from '../../types.js';
-import { HTTP_METHODS_WITH_BODY as METHODS_WITH_BODY } from '../descriptors.js';
+import { HTTP_METHODS_WITH_BODY as METHODS_WITH_BODY } from '../descriptors/index.js';
 import { resolveTimeout } from '../params.js';
 
 /** Ten minutes. Past that the workflow wants a queue, not a longer timeout. */

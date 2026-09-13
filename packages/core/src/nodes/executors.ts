@@ -1,5 +1,5 @@
 import type { NodeDefinition, NodeExecute } from '../types.js';
-import * as descriptors from './descriptors.js';
+import * as descriptors from './descriptors/index.js';
 import { executeCode } from './impl/code.js';
 import { executeParseCsv, executeToCsv } from './impl/csv.js';
 import { sendEmail } from './impl/email.js';
@@ -41,7 +41,7 @@ import { executePassThrough } from './impl/triggers.js';
  * Descriptors joined to their behaviour.
  *
  * Only the runner imports this module. Everything the editor needs comes from
- * `./descriptors.js`, which is what keeps the Code node's child-process
+ * `./descriptors/`, which is what keeps the Code node's child-process
  * sandbox and the HTTP client out of the browser bundle.
  */
 const EXECUTORS: Record<string, NodeExecute> = {
