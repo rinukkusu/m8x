@@ -8,6 +8,8 @@ import { requireUser } from '@/lib/auth';
 export interface CredentialActionResult {
   ok: boolean;
   error?: string;
+  /** Set on a successful save, so a caller can select what it just created. */
+  id?: string;
 }
 
 export async function saveCredentialAction(input: {
@@ -21,9 +23,12 @@ export async function saveCredentialAction(input: {
   if (input.name.trim() === '') return { ok: false, error: 'A credential needs a name.' };
 
   try {
-    await saveCredential(input);
+    const id = await saveCredential(input);
     revalidatePath('/credentials');
-    return { ok: true };
+    // The editor picks credentials on a node, so its page has to see a new one
+    // too — it is reachable without ever passing through /credentials.
+    revalidatePath('/workflows/[id]', 'page');
+    return { ok: true, id };
   } catch (error) {
     // The most likely failure by far is the unique name constraint, but an
     // unset encryption key surfaces here too and is worth showing verbatim.
@@ -36,5 +41,6 @@ export async function deleteCredentialAction(id: string): Promise<CredentialActi
 
   await deleteCredential(id);
   revalidatePath('/credentials');
+  revalidatePath('/workflows/[id]', 'page');
   return { ok: true };
 }

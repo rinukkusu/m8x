@@ -1,5 +1,5 @@
 import type { Graph } from '@m8x/core';
-import { listCredentials, prisma, webhookUrlFor } from '@m8x/core/server';
+import { CREDENTIAL_TYPES, listCredentials, prisma, webhookUrlFor } from '@m8x/core/server';
 import { notFound } from 'next/navigation';
 
 import { Editor } from '@/components/editor/editor';
@@ -45,6 +45,7 @@ export default async function WorkflowEditorPage({ params }: { params: Promise<{
         name: credential.name,
         type: credential.type,
       }))}
+      credentialTypes={CREDENTIAL_TYPES}
       webhookUrls={Object.fromEntries(
         triggers
           .filter((trigger) => trigger.webhookPath)

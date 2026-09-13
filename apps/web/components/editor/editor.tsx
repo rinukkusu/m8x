@@ -11,6 +11,7 @@ import {
   type GraphNode,
   type NodeDescriptor,
 } from '@m8x/core';
+import type { CredentialType } from '@m8x/core/server';
 import {
   Background,
   BackgroundVariant,
@@ -48,6 +49,7 @@ export interface EditorWorkflow {
 export function Editor(props: {
   workflow: EditorWorkflow;
   credentials: CredentialOption[];
+  credentialTypes: CredentialType[];
   webhookUrls: Record<string, string>;
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
@@ -61,11 +63,13 @@ export function Editor(props: {
 function EditorInner({
   workflow,
   credentials,
+  credentialTypes,
   webhookUrls,
   lastExecution,
 }: {
   workflow: EditorWorkflow;
   credentials: CredentialOption[];
+  credentialTypes: CredentialType[];
   webhookUrls: Record<string, string>;
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
@@ -330,6 +334,7 @@ function EditorInner({
           <Inspector
             node={selected}
             credentials={credentials}
+            credentialTypes={credentialTypes}
             webhookUrl={webhookUrls[selected.id]}
             onChange={(patch) => patchNode(selected.id, patch)}
             onDelete={() => removeNode(selected.id)}

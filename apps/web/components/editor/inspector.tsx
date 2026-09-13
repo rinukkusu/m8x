@@ -1,6 +1,7 @@
 'use client';
 
 import { getNodeDescriptor, isParamVisible, type GraphNode } from '@m8x/core';
+import type { CredentialType } from '@m8x/core/server';
 import { Copy, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 
@@ -17,6 +18,7 @@ import { ParamField, type CredentialOption } from './param-field';
 export function Inspector({
   node,
   credentials,
+  credentialTypes,
   webhookUrl,
   onChange,
   onDelete,
@@ -25,6 +27,7 @@ export function Inspector({
 }: {
   node: GraphNode;
   credentials: CredentialOption[];
+  credentialTypes: CredentialType[];
   webhookUrl?: string;
   onChange: (patch: Partial<GraphNode>) => void;
   onDelete: () => void;
@@ -98,6 +101,7 @@ export function Inspector({
                 schema={schema}
                 value={node.params[schema.name] ?? schema.default}
                 credentials={credentials}
+                credentialTypes={credentialTypes}
                 onChange={(value) => onChange({ params: { ...node.params, [schema.name]: value } })}
               />
             ))}

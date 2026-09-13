@@ -1,15 +1,13 @@
 'use client';
 
 import type { ParamSchema } from '@m8x/core';
+import type { CredentialType } from '@m8x/core/server';
 import { Plus, X } from 'lucide-react';
 
 import { Button, Field, Input, Select, Textarea } from '../ui';
+import { CredentialPicker, type CredentialOption } from './credential-picker';
 
-export interface CredentialOption {
-  id: string;
-  name: string;
-  type: string;
-}
+export type { CredentialOption };
 
 /**
  * Renders one parameter from its schema.
@@ -23,30 +21,25 @@ export function ParamField({
   value,
   onChange,
   credentials,
+  credentialTypes,
 }: {
   schema: ParamSchema;
   value: unknown;
   onChange: (value: unknown) => void;
   credentials: CredentialOption[];
+  credentialTypes: CredentialType[];
 }) {
   if (schema.credentialType) {
-    const matching = credentials.filter((credential) => credential.type === schema.credentialType);
     return (
-      <Field label={schema.displayName} hint={schema.description}>
-        <Select value={String(value ?? '')} onChange={(event) => onChange(event.target.value || undefined)}>
-          <option value="">None</option>
-          {matching.map((credential) => (
-            <option key={credential.id} value={credential.id}>
-              {credential.name}
-            </option>
-          ))}
-        </Select>
-        {matching.length === 0 ? (
-          <span className="block text-xs text-ink-faint">
-            No credentials of this type yet. Add one under Credentials.
-          </span>
-        ) : null}
-      </Field>
+      <CredentialPicker
+        label={schema.displayName}
+        hint={schema.description}
+        credentialType={schema.credentialType}
+        value={String(value ?? '')}
+        credentials={credentials}
+        credentialTypes={credentialTypes}
+        onChange={onChange}
+      />
     );
   }
 

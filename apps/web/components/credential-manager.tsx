@@ -6,7 +6,8 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 
 import { deleteCredentialAction, saveCredentialAction } from '@/app/actions/credentials';
-import { Button, EmptyState, Field, Input, Select, formatRelative } from './ui';
+import { CredentialForm } from './credential-form';
+import { Button, EmptyState, formatRelative } from './ui';
 
 interface CredentialRow {
   id: string;
@@ -101,6 +102,7 @@ export function CredentialManager({
           types={types}
           initial={editing}
           existingName={credentials.find((credential) => credential.id === editing.id)?.name}
+          pending={pending}
           onCancel={() => setEditing(null)}
           onSave={(input) => {
             setError(null);
@@ -116,98 +118,6 @@ export function CredentialManager({
           }}
         />
       ) : null}
-    </div>
-  );
-}
-
-function CredentialForm({
-  types,
-  initial,
-  existingName,
-  onCancel,
-  onSave,
-}: {
-  types: CredentialType[];
-  initial: { id?: string; type: string };
-  existingName?: string;
-  onCancel: () => void;
-  onSave: (input: { id?: string; name: string; type: string; data: Record<string, string> }) => void;
-}) {
-  const [type, setType] = useState(initial.type);
-  const [name, setName] = useState(existingName ?? '');
-  const [data, setData] = useState<Record<string, string>>({});
-
-  const definition = types.find((entry) => entry.type === type) ?? types[0]!;
-
-  const visibleFields = definition.fields.filter((field) => {
-    if (!field.showIf) return true;
-    return Object.entries(field.showIf).every(([key, allowed]) => allowed.includes(data[key] ?? ''));
-  });
-
-  return (
-    <div className="card space-y-4 p-4">
-      <p className="text-sm font-medium text-ink">{initial.id ? 'Replace credential' : 'New credential'}</p>
-
-      {initial.id ? (
-        <p className="rounded-md border border-line bg-surface-0 px-3 py-2 text-xs text-ink-faint">
-          Existing values are not shown, because they never leave the worker. Saving replaces them entirely.
-        </p>
-      ) : null}
-
-      <Field label="Name">
-        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Stripe production" />
-      </Field>
-
-      <Field label="Type">
-        <Select
-          value={type}
-          onChange={(event) => {
-            setType(event.target.value);
-            setData({});
-          }}
-          disabled={Boolean(initial.id)}
-        >
-          {types.map((entry) => (
-            <option key={entry.type} value={entry.type}>
-              {entry.displayName}
-            </option>
-          ))}
-        </Select>
-      </Field>
-
-      {visibleFields.map((field) => (
-        <Field key={field.name} label={field.displayName}>
-          {field.type === 'select' ? (
-            <Select
-              value={data[field.name] ?? ''}
-              onChange={(event) => setData((current) => ({ ...current, [field.name]: event.target.value }))}
-            >
-              <option value="">Choose one</option>
-              {field.options?.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </Select>
-          ) : (
-            <Input
-              type={field.type === 'password' ? 'password' : 'text'}
-              autoComplete="off"
-              value={data[field.name] ?? ''}
-              onChange={(event) => setData((current) => ({ ...current, [field.name]: event.target.value }))}
-            />
-          )}
-        </Field>
-      ))}
-
-      <div className="flex justify-end gap-2">
-        <Button size="sm" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button size="sm" variant="primary" onClick={() => onSave({ id: initial.id, name, type, data })}>
-          Save
-        </Button>
-      </div>
     </div>
   );
 }
