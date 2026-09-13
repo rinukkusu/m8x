@@ -83,12 +83,44 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'flow.stopAndError': executeStopAndError,
 };
 
-const DEFINITIONS = new Map<string, NodeDefinition>(
-  descriptors.NODE_DESCRIPTORS.map((descriptor) => [
-    descriptor.type,
-    { ...descriptor, execute: EXECUTORS[descriptor.type]! },
-  ]),
-);
+/**
+ * Join the two halves, refusing to load if they do not line up.
+ *
+ * A descriptor whose type is missing from `EXECUTORS` would otherwise build a
+ * definition with `execute: undefined` and fail as a `TypeError` partway
+ * through a run, after the nodes before it had already fired their side
+ * effects. An entry in `EXECUTORS` with no descriptor is the same mistake seen
+ * from the other side: usually a typo in a type string, and one that leaves the
+ * real node unwired. Both are wiring bugs, so both are caught at import.
+ */
+function buildDefinitions(): Map<string, NodeDefinition> {
+  const definitions = new Map<string, NodeDefinition>();
+  const unwired: string[] = [];
+
+  for (const descriptor of descriptors.NODE_DESCRIPTORS) {
+    const execute = EXECUTORS[descriptor.type];
+    if (!execute) {
+      unwired.push(descriptor.type);
+      continue;
+    }
+    definitions.set(descriptor.type, { ...descriptor, execute });
+  }
+
+  const orphaned = Object.keys(EXECUTORS).filter((type) => !definitions.has(type));
+
+  const problems = [
+    unwired.length > 0 ? `no executor for ${unwired.join(', ')}` : '',
+    orphaned.length > 0 ? `no descriptor for ${orphaned.join(', ')}` : '',
+  ].filter((problem) => problem !== '');
+
+  if (problems.length > 0) {
+    throw new Error(`The node registry is inconsistent: ${problems.join('; ')}.`);
+  }
+
+  return definitions;
+}
+
+const DEFINITIONS = buildDefinitions();
 
 export function getNodeDefinition(type: string): NodeDefinition | undefined {
   return DEFINITIONS.get(type);

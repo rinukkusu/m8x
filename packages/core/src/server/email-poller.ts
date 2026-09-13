@@ -312,7 +312,7 @@ async function deliver(email: ParsedEmail, mailbox: MailboxKey, trigger: Subscri
     trigger: 'email',
     input: [item],
     // Named explicitly, so a workflow with two triggers starts at this one.
-    startNodeId: trigger.nodeId,
+    triggerNodeId: trigger.nodeId,
   });
 
   // Now that the run exists, the bytes belong to it and go when it does.

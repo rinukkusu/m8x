@@ -198,7 +198,7 @@ async function deliver(
         trigger: 'telegram',
         input: [item],
         // Named explicitly, so a workflow with two triggers starts at this one.
-        startNodeId: trigger.nodeId,
+        triggerNodeId: trigger.nodeId,
       });
 
       log(`[telegram] queued ${executionId} for workflow ${trigger.workflowId}`);

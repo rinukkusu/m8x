@@ -1234,7 +1234,7 @@ test('retrying from a node reuses the stored upstream output', async () => {
     mode: 'retry',
     graph,
     seedItems: [],
-    startNodeId: 'second',
+    resumeFromNodeId: 'second',
     restoredOutputs: { first: [[{ json: { from: 'restored' } }]] },
     signal: new AbortController().signal,
     loadCredential: async () => null,

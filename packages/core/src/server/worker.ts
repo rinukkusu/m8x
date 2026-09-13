@@ -167,7 +167,7 @@ async function runClaimedExecution(
     return null;
   }
 
-  const { seedItems, startNodeId } = readInput(execution.input);
+  const { seedItems, triggerNodeId, resumeFromNodeId } = readInput(execution.input);
   const recorder = createExecutionRecorder(executionId);
 
   // A child runs under its parent's signal rather than starting a fresh hour of
@@ -183,7 +183,9 @@ async function runClaimedExecution(
 
   try {
     const restoredOutputs =
-      startNodeId && execution.retryOfId ? await restoredOutputsFor(execution.retryOfId) : undefined;
+      resumeFromNodeId && execution.retryOfId
+        ? await restoredOutputsFor(execution.retryOfId)
+        : undefined;
 
     const result = await runWorkflow({
       executionId,
@@ -191,7 +193,8 @@ async function runClaimedExecution(
       mode: execution.trigger,
       graph,
       seedItems,
-      startNodeId,
+      triggerNodeId,
+      resumeFromNodeId,
       restoredOutputs,
       signal: controller.signal,
       loadCredential: loadCredentialData,
@@ -314,6 +317,10 @@ export async function tickScheduler(log: (message: string) => void = console.inf
         workflowId: trigger.workflowId,
         trigger: 'schedule',
         input: [{ json: { triggeredAt: new Date().toISOString() } }],
+        // Naming it matters on a workflow holding more than one trigger: without
+        // it the run would start at whichever trigger sits highest on the canvas
+        // rather than the schedule that actually came due.
+        triggerNodeId: trigger.nodeId,
       });
 
       log(`[scheduler] queued ${executionId} for workflow ${trigger.workflowId}`);
@@ -326,17 +333,35 @@ export async function tickScheduler(log: (message: string) => void = console.inf
 
 interface ExecutionInput {
   seedItems: Item[];
-  startNodeId?: string;
+  triggerNodeId?: string;
+  resumeFromNodeId?: string;
 }
 
-function readInput(stored: unknown): ExecutionInput {
+/**
+ * Read back what `createExecution` stored.
+ *
+ * `startNodeId` is the older spelling, from when one field carried both "which
+ * trigger fired" and "where to resume". Rows written before the split are still
+ * sitting in the queue on an upgrade, and it meant both things at once there, so
+ * that is what it is read as.
+ */
+export function readInput(stored: unknown): ExecutionInput {
   if (Array.isArray(stored)) return { seedItems: stored as Item[] };
 
   if (stored && typeof stored === 'object') {
-    const shaped = stored as { items?: unknown; startNodeId?: unknown };
+    const shaped = stored as {
+      items?: unknown;
+      triggerNodeId?: unknown;
+      resumeFromNodeId?: unknown;
+      startNodeId?: unknown;
+    };
+    const legacy = typeof shaped.startNodeId === 'string' ? shaped.startNodeId : undefined;
+
     return {
       seedItems: Array.isArray(shaped.items) ? (shaped.items as Item[]) : [],
-      startNodeId: typeof shaped.startNodeId === 'string' ? shaped.startNodeId : undefined,
+      triggerNodeId: typeof shaped.triggerNodeId === 'string' ? shaped.triggerNodeId : legacy,
+      resumeFromNodeId:
+        typeof shaped.resumeFromNodeId === 'string' ? shaped.resumeFromNodeId : legacy,
     };
   }
 

@@ -148,10 +148,35 @@ const BINARY_POWER: Record<string, number> = {
   '*': 7, '/': 7, '%': 7,
 };
 
+/**
+ * How deeply expressions may nest.
+ *
+ * The parser is recursive descent, so nesting in the source becomes nesting on
+ * the call stack: `((((((...1...))))))` or a run of unary operators recurses
+ * once per level. Without a limit a pasted expression could take the worker
+ * down with a stack overflow, which is an unhandleable crash rather than a
+ * failed node. Real expressions are nowhere near this deep.
+ */
+const MAX_PARSE_DEPTH = 100;
+
 class Parser {
   private pos = 0;
+  private depth = 0;
 
   constructor(private readonly tokens: Token[]) {}
+
+  /** Count one level of recursion in, and out again however the parse ends. */
+  private nested<T>(parse: () => T): T {
+    if (++this.depth > MAX_PARSE_DEPTH) {
+      this.depth--;
+      throw new ExpressionError('This expression nests too deeply to parse.');
+    }
+    try {
+      return parse();
+    } finally {
+      this.depth--;
+    }
+  }
 
   private peek(): Token {
     return this.tokens[this.pos]!;
@@ -179,6 +204,10 @@ class Parser {
   }
 
   private parseExpression(minPower: number): Node {
+    return this.nested(() => this.parseExpressionInner(minPower));
+  }
+
+  private parseExpressionInner(minPower: number): Node {
     let left = this.parseUnary();
 
     for (;;) {
@@ -209,7 +238,7 @@ class Parser {
     const token = this.peek();
     if (token.type === 'punct' && (token.value === '!' || token.value === '-')) {
       this.next();
-      return { kind: 'unary', op: token.value, operand: this.parseUnary() };
+      return this.nested((): Node => ({ kind: 'unary', op: token.value, operand: this.parseUnary() }));
     }
     return this.parsePostfix(this.parsePrimary());
   }
@@ -326,6 +355,37 @@ function isForbiddenKey(key: string): boolean {
   return key === '__proto__' || key === 'constructor' || key === 'prototype';
 }
 
+/**
+ * Largest string an expression may build in one call.
+ *
+ * Three of the allowlisted methods take a length rather than returning
+ * something bounded by their input, so `{{ "a".repeat(1e9) }}` asks for a
+ * gigabyte and takes the worker, and every execution sharing it, down with an
+ * out-of-memory kill. That is a whole-process failure caused by one node's
+ * parameter, which is exactly what the rest of this file exists to avoid.
+ * A megabyte is far beyond any legitimate use of these in a parameter; the Code
+ * node is the escape hatch for anything larger.
+ */
+const MAX_BUILT_STRING = 1_000_000;
+
+/**
+ * Refuse a call that would allocate an absurd string, before it allocates it.
+ * Checked rather than caught: by the time it throws, the memory is gone.
+ */
+function assertResultFits(name: string, target: unknown, args: unknown[]): void {
+  if (name !== 'repeat' && name !== 'padStart' && name !== 'padEnd') return;
+
+  const count = Number(args[0] ?? 0);
+  if (!Number.isFinite(count) || count < 0) return;
+
+  const size = name === 'repeat' ? String(target).length * count : count;
+  if (size > MAX_BUILT_STRING) {
+    throw new ExpressionError(
+      `${name}() would build a string of ${Math.round(size).toLocaleString('en-US')} characters, past the ${MAX_BUILT_STRING.toLocaleString('en-US')} an expression may build.`,
+    );
+  }
+}
+
 export interface ExpressionScope {
   /** The current item's `json`. */
   $json: Record<string, unknown>;
@@ -399,6 +459,7 @@ function evaluate(node: Node, scope: ExpressionScope): unknown {
       }
 
       const args = node.args.map((arg) => evaluate(arg, scope));
+      assertResultFits(name, target, args);
       return (fn as (...a: unknown[]) => unknown).apply(target, args);
     }
 

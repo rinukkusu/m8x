@@ -1,3 +1,4 @@
+import { appendAll } from '../../collections.js';
 import { NodeError, type Item, type NodeExecute, type NodeExecuteContext } from '../../types.js';
 
 export const executeExecuteWorkflow: NodeExecute = async (ctx) => {
@@ -11,7 +12,7 @@ export const executeExecuteWorkflow: NodeExecute = async (ctx) => {
   // runs, each holding a worker while it waits on its own children.
   const out: Item[] = [];
   for (let i = 0; i < ctx.items.length; i++) {
-    out.push(...(await ctx.executeWorkflow(workflowId(ctx, i), [ctx.items[i]!], { wait })));
+    appendAll(out, await ctx.executeWorkflow(workflowId(ctx, i), [ctx.items[i]!], { wait }));
   }
   return [out];
 };

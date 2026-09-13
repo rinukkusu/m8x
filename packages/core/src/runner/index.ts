@@ -1,3 +1,4 @@
+import { appendAll } from '../collections.js';
 import { delay } from '../delay.js';
 import { resolveValue, type ExpressionScope } from '../expressions.js';
 import { describeError, errorFingerprint, type ExtractedError } from '../fingerprint.js';
@@ -113,10 +114,23 @@ export interface RunnerContext {
   /** Items handed to the entry node, e.g. a webhook body. */
   seedItems: Item[];
   /**
-   * Start here instead of at the graph's entry nodes. Used by retry-from-node:
-   * the outputs of everything upstream come from `restoredOutputs`.
+   * Which trigger node this run started from, when the caller knows.
+   *
+   * A workflow may hold several triggers, and only the one that actually fired
+   * produces items; the rest are skipped. Absent for a manual run, where the
+   * first trigger on the canvas is taken to be the one meant.
    */
-  startNodeId?: string;
+  triggerNodeId?: string;
+  /**
+   * Skip everything before this node instead of running from the top. Used by
+   * retry-from-node: the outputs of everything upstream come from
+   * `restoredOutputs`, because upstream already fired its side effects.
+   *
+   * Separate from `triggerNodeId` because they answer different questions, and
+   * a retry sets both: which trigger the original run used, and where to pick
+   * the work back up.
+   */
+  resumeFromNodeId?: string;
   /** Node outputs recovered from a previous execution, keyed by node id. */
   restoredOutputs?: Record<string, Item[][]>;
   signal: AbortSignal;
@@ -226,7 +240,8 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
   // A retry point inside a loop has no meaning the outer order can express, so
   // one that is not in it re-runs everything rather than silently running
   // nothing at all.
-  let startReached = ctx.startNodeId === undefined || !order.some((node) => node.id === ctx.startNodeId);
+  let startReached =
+    ctx.resumeFromNodeId === undefined || !order.some((node) => node.id === ctx.resumeFromNodeId);
 
   async function step(node: GraphNode, options: StepOptions = {}): Promise<Step> {
     const definition = requireNodeDefinition(node.type);
@@ -261,7 +276,9 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       input = options.input;
     } else if (definition.inputs === 0) {
       // Trigger. Only the one the run actually started from produces items.
-      const isEntryPoint = ctx.startNodeId ? node.id === ctx.startNodeId : isRunEntryPoint(node, ctx, order);
+      const isEntryPoint = ctx.triggerNodeId
+        ? node.id === ctx.triggerNodeId
+        : isFirstTriggerOnCanvas(node, order);
       if (!isEntryPoint) {
         skipped.add(node.id);
         await ctx.emit(makeSkipEvent(node, sequence++, 'not the trigger for this run', iteration));
@@ -397,7 +414,7 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       }
 
       const back = gatherInput(backEdgesInto.get(loop.id) ?? [], outputs, skipped);
-      if (back.anyBranchActive) state.done.push(...back.items);
+      if (back.anyBranchActive) appendAll(state.done, back.items);
     }
 
     return OK;
@@ -430,11 +447,11 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       return { status: 'cancelled', outputs, durationMs: Date.now() - startedAt };
     }
 
-    if (ctx.startNodeId !== undefined && !startReached) {
+    if (ctx.resumeFromNodeId !== undefined && !startReached) {
       // Everything before the retry point keeps its restored output and is not
       // re-run. Side effects upstream already happened; repeating them would be
       // the wrong thing.
-      if (node.id === ctx.startNodeId) startReached = true;
+      if (node.id === ctx.resumeFromNodeId) startReached = true;
       else {
         if (!(node.id in outputs)) skipped.add(node.id);
         continue;
@@ -640,7 +657,7 @@ export function terminalOutputs(graph: Graph, outputs: Record<string, Item[][]>)
   for (const node of topologicalOrder(acyclic)) {
     if ((index.outgoing.get(node.id) ?? []).length > 0) continue;
     const output = outputs[node.id];
-    if (output) items.push(...output.flat());
+    if (output) appendAll(items, output.flat());
   }
 
   return items;
@@ -650,7 +667,17 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
   const { ctx, node, definition, input } = args;
   const scopeCache = new Map<number, ExpressionScope>();
 
-  const nodeOutputsByName = buildNodeOutputScope(ctx.graph, args.outputs);
+  // Both of these are built on first use rather than up front, and memoised for
+  // the rest of this attempt. `$node` is the expensive one: it walks every node
+  // in the graph and flattens its entire output, and building that for every
+  // attempt of every node turns a run into quadratic copying — while most nodes
+  // never mention `$node` at all. Nothing they read changes while a node runs,
+  // so one build per attempt is as correct as one per item.
+  let nodeOutputsByName: NodeOutputScope | undefined;
+  const nodeOutputs = () => (nodeOutputsByName ??= buildNodeOutputScope(ctx.graph, args.outputs));
+
+  let envVars: Record<string, string> | undefined;
+  const env = () => (envVars ??= exposedEnv());
 
   const scopeFor = (itemIndex: number): ExpressionScope => {
     const cached = scopeCache.get(itemIndex);
@@ -659,9 +686,16 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
       $json: input[itemIndex]?.json ?? {},
       $items: input,
       $index: itemIndex,
-      $node: nodeOutputsByName,
+      // Accessors rather than values, so a scope costs nothing to make. The
+      // expression evaluator reaches them through `Object.hasOwn` and a plain
+      // read, both of which an own accessor satisfies.
+      get $node() {
+        return nodeOutputs();
+      },
       $now: args.now,
-      $env: exposedEnv(),
+      get $env() {
+        return env();
+      },
       $execution: { id: ctx.executionId, workflowId: ctx.workflowId, mode: ctx.mode },
     };
     scopeCache.set(itemIndex, scope);
@@ -678,7 +712,7 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
 
     getParam<T>(name: string, itemIndex = 0): T {
       if (name === INTERNAL_INPUT_SPLIT) return args.inputSplit as T;
-      if (name === INTERNAL_NODE_OUTPUTS) return nodeOutputsByName as T;
+      if (name === INTERNAL_NODE_OUTPUTS) return nodeOutputs() as T;
       if (name === INTERNAL_LOOP_CURSOR) return (args.loop?.cursor ?? 0) as T;
       if (name === INTERNAL_LOOP_DONE) return (args.loop?.done ?? []) as T;
 
@@ -826,7 +860,7 @@ function gatherInput(
     anyBranchActive = true;
     const branch = sourceOutput[edge.sourceOutput] ?? [];
     const bucket = byInput.get(edge.targetInput);
-    if (bucket) bucket.push(...branch);
+    if (bucket) appendAll(bucket, branch);
     else byInput.set(edge.targetInput, [...branch]);
   }
 
@@ -856,11 +890,11 @@ function errorOutput(definition: NodeDefinition, node: GraphNode, error: Extract
   return branches;
 }
 
-function buildNodeOutputScope(
-  graph: Graph,
-  outputs: Record<string, Item[][]>,
-): Record<string, { json: Record<string, unknown>; items: unknown[] }> {
-  const scope: Record<string, { json: Record<string, unknown>; items: unknown[] }> = {};
+/** What `$node` exposes: every node that has run, addressed by its name. */
+type NodeOutputScope = Record<string, { json: Record<string, unknown>; items: unknown[] }>;
+
+function buildNodeOutputScope(graph: Graph, outputs: Record<string, Item[][]>): NodeOutputScope {
+  const scope: NodeOutputScope = {};
 
   for (const node of graph.nodes) {
     const output = outputs[node.id];
@@ -872,10 +906,12 @@ function buildNodeOutputScope(
   return scope;
 }
 
-function isRunEntryPoint(node: GraphNode, ctx: RunnerContext, order: GraphNode[]): boolean {
-  // A manual run starts at the first trigger in canvas order. A webhook or
-  // schedule run names its trigger explicitly via startNodeId, so this is only
-  // reached for manual runs and single-trigger workflows.
+/**
+ * The fallback for a run that did not name its trigger: the first one laid out
+ * on the canvas. Anything started by a trigger row — webhook, schedule, polled
+ * — passes `triggerNodeId` instead, so this is only reached for manual runs.
+ */
+function isFirstTriggerOnCanvas(node: GraphNode, order: GraphNode[]): boolean {
   const firstTrigger = order.find((candidate) => {
     const definition = requireNodeDefinition(candidate.type);
     return definition.inputs === 0 && !candidate.disabled;

@@ -27,10 +27,13 @@ export interface CreateExecutionInput {
   /** Items handed to the trigger node. */
   input?: Item[];
   /**
-   * Node the run should start from. Retries set it, and so does any trigger
-   * that knows which of several trigger nodes fired.
+   * Which trigger node fired, for a workflow that may hold several. Every
+   * trigger-driven run sets it; a manual run does not, and falls back to the
+   * first trigger on the canvas.
    */
-  startNodeId?: string;
+  triggerNodeId?: string;
+  /** Node a retry should pick up from, skipping everything before it. */
+  resumeFromNodeId?: string;
   retryOfId?: string;
   /** Set when another workflow's Execute Workflow node started this run. */
   parentExecutionId?: string;
@@ -74,15 +77,16 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
     select: { id: true },
   });
 
-  // The start node rides along in the input payload rather than getting its own
-  // column, since only retries ever set it.
-  if (input.startNodeId) {
+  // Both node ids ride along in the input payload rather than getting their own
+  // columns: they are read once, by the worker, on the way into the runner.
+  if (input.triggerNodeId || input.resumeFromNodeId) {
     await prisma.execution.update({
       where: { id: execution.id },
       data: {
         input: {
           items: (input.input ?? []) as unknown as Prisma.InputJsonValue,
-          startNodeId: input.startNodeId,
+          triggerNodeId: input.triggerNodeId,
+          resumeFromNodeId: input.resumeFromNodeId,
         } as unknown as Prisma.InputJsonValue,
       },
     });
@@ -324,10 +328,18 @@ export async function retryExecution(executionId: string, options: RetryOptions 
     include: { nodeRuns: { orderBy: { sequence: 'asc' } }, workflowVersion: true },
   });
 
-  const storedInput = original.input as { items?: Item[] } | Item[] | null;
+  const storedInput = original.input as
+    | { items?: Item[]; triggerNodeId?: string; startNodeId?: string }
+    | Item[]
+    | null;
   const seedItems = Array.isArray(storedInput) ? storedInput : (storedInput?.items ?? []);
+  // Whichever trigger the original run used, this one uses too. Without it a
+  // workflow with more than one trigger would retry down the wrong branch.
+  const triggerNodeId = Array.isArray(storedInput)
+    ? undefined
+    : (storedInput?.triggerNodeId ?? storedInput?.startNodeId);
 
-  let startNodeId: string | undefined;
+  let resumeFromNodeId: string | undefined;
 
   if (options.fromFailedNode && original.errorNodeId) {
     const failedRun = original.nodeRuns.find((run) => run.nodeId === original.errorNodeId);
@@ -343,14 +355,15 @@ export async function retryExecution(executionId: string, options: RetryOptions 
       ? [...analyseLoops(graph).regions.values()].some((region) => region.has(original.errorNodeId!))
       : false;
 
-    if (failedRun && !upstreamTruncated && !insideLoop) startNodeId = original.errorNodeId;
+    if (failedRun && !upstreamTruncated && !insideLoop) resumeFromNodeId = original.errorNodeId;
   }
 
   const created = await createExecution({
     workflowId: original.workflowId,
     trigger: 'retry',
     input: seedItems,
-    startNodeId,
+    triggerNodeId,
+    resumeFromNodeId,
     retryOfId: original.id,
   });
 
