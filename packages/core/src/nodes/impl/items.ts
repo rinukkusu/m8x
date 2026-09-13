@@ -173,10 +173,13 @@ function summarise(items: Item[], aggregation: Aggregation): unknown {
       return numbers.reduce((total, value) => total + value, 0);
     case 'avg':
       return numbers.reduce((total, value) => total + value, 0) / numbers.length;
+    // Not `Math.min(...numbers)`: the spread passes one argument per item, and
+    // a Summarize over a table big enough to be worth summarising is exactly
+    // where that overflows the stack. Same reason `appendAll` exists.
     case 'min':
-      return Math.min(...numbers);
+      return numbers.reduce((lowest, value) => (value < lowest ? value : lowest));
     default:
-      return Math.max(...numbers);
+      return numbers.reduce((highest, value) => (value > highest ? value : highest));
   }
 }
 

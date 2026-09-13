@@ -144,3 +144,25 @@ test('Summarize names an operation it does not know', async () => {
   assert.equal(result.status, 'failed');
   assert.match(result.failure!.message, /"median" is not something Summarize can work out/);
 });
+
+test('Summarize handles more items than a spread would survive', async () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('summarize', 'flow.summarize', {
+        aggregations: [{ key: 'n', value: 'min' }, { key: 'n', value: 'max' }],
+      }),
+    ],
+    edges: [edge('trigger', 'summarize')],
+  };
+
+  // Past the engine's argument limit, which is what `Math.min(...numbers)`
+  // would have hit. A full table export is not an unusual thing to summarise.
+  const items = Array.from({ length: 200_000 }, (_, index) => ({ json: { n: index } }));
+
+  const { result } = await run(graph, items);
+
+  assert.equal(result.status, 'success');
+  assert.equal(result.outputs.summarize?.[0]?.[0]?.json.min_n, 0);
+  assert.equal(result.outputs.summarize?.[0]?.[0]?.json.max_n, 199_999);
+});

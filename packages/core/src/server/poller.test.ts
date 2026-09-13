@@ -351,3 +351,34 @@ test('the backoff is forgotten across a restart', async () => {
     await poller.stop();
   }
 });
+
+test('a target that goes away does not keep its backoff for when it comes back', async () => {
+  let attempts = 0;
+  let subscribed = true;
+
+  await withPoller(
+    {
+      // Long enough that a remembered backoff would still be in force when the
+      // target comes back, so the retry below can only be an immediate one.
+      minBackoffMs: 30_000,
+      maxBackoffMs: 60_000,
+      listTargets: async () => (subscribed ? targets('a') : new Map()),
+      poll: async () => {
+        attempts++;
+        throw new Error('broken');
+      },
+    },
+    async () => {
+      await waitFor(() => attempts === 1, 'the failing target to be polled once');
+
+      // Switched off, noticed, and switched back on. A trigger being edited
+      // looks exactly like this from here.
+      subscribed = false;
+      await waitFor(() => true, 'a pass with nothing subscribed');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      subscribed = true;
+
+      await waitFor(() => attempts === 2, 'the returning target to be polled again');
+    },
+  );
+});

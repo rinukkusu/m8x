@@ -126,6 +126,14 @@ export function createPoller<TTarget, TConfig>(spec: PollerSpec<TTarget, TConfig
         continue;
       }
 
+      // A target nobody is listening to any more — trigger deleted, workflow
+      // switched off — keeps no backoff. Without this the map is a slow leak
+      // for the life of the process, and a target that comes back later would
+      // still be serving out a wait from before it went away.
+      for (const key of backoff.keys()) {
+        if (!targets.has(key)) backoff.delete(key);
+      }
+
       if (targets.size === 0) {
         await sleep(spec.idleMs, signal);
         continue;

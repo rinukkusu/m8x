@@ -159,6 +159,22 @@ const BINARY_POWER: Record<string, number> = {
  */
 const MAX_PARSE_DEPTH = 100;
 
+/**
+ * How long an expression may be, in tokens.
+ *
+ * The depth limit above bounds the parser, which recurses on nesting. It does
+ * not bound `evaluate`, which recurses over the tree the parser built, and the
+ * two do not grow together: `1 + 1 + 1 + ...` is parsed by a loop, so it never
+ * counts as nesting, yet it builds a `binary` node one level deeper per term
+ * and overflows the stack during evaluation instead. Tree depth can never
+ * exceed the number of tokens, so capping those bounds both halves at once.
+ *
+ * Two thousand is far past any expression written by hand — the longest in the
+ * tests is under a hundred — and the Code node is there for anything that
+ * genuinely needs to be longer.
+ */
+const MAX_EXPRESSION_TOKENS = 2_000;
+
 class Parser {
   private pos = 0;
   private depth = 0;
@@ -359,10 +375,12 @@ function isForbiddenKey(key: string): boolean {
  * Largest string an expression may build in one call.
  *
  * Three of the allowlisted methods take a length rather than returning
- * something bounded by their input, so `{{ "a".repeat(1e9) }}` asks for a
- * gigabyte and takes the worker, and every execution sharing it, down with an
+ * something bounded by their input, so `{{ "a".repeat(1000000000) }}` asks for
+ * a gigabyte and takes the worker, and every execution sharing it, down with an
  * out-of-memory kill. That is a whole-process failure caused by one node's
  * parameter, which is exactly what the rest of this file exists to avoid.
+ * (Spelled out rather than as `1e9`: the tokeniser has no exponent notation, so
+ * that is not a number here at all.)
  * A megabyte is far beyond any legitimate use of these in a parameter; the Code
  * node is the escape hatch for anything larger.
  */
@@ -378,7 +396,11 @@ function assertResultFits(name: string, target: unknown, args: unknown[]): void 
   const count = Number(args[0] ?? 0);
   if (!Number.isFinite(count) || count < 0) return;
 
-  const size = name === 'repeat' ? String(target).length * count : count;
+  // All three exist only on strings, so the method having resolved at all means
+  // the target is one. Reading `.length` off it directly rather than through
+  // `String()` keeps a user-controlled `toString` out of the check.
+  const length = typeof target === 'string' ? target.length : 0;
+  const size = name === 'repeat' ? length * count : count;
   if (size > MAX_BUILT_STRING) {
     throw new ExpressionError(
       `${name}() would build a string of ${Math.round(size).toLocaleString('en-US')} characters, past the ${MAX_BUILT_STRING.toLocaleString('en-US')} an expression may build.`,
@@ -508,7 +530,15 @@ function parseCached(source: string): Node {
   const cached = astCache.get(source);
   if (cached) return cached;
 
-  const ast = new Parser(tokenise(source)).parse();
+  const tokens = tokenise(source);
+  // The `- 1` is the eof token, which is not part of what anyone wrote.
+  if (tokens.length - 1 > MAX_EXPRESSION_TOKENS) {
+    throw new ExpressionError(
+      `This expression is ${(tokens.length - 1).toLocaleString('en-US')} tokens long, past the ${MAX_EXPRESSION_TOKENS.toLocaleString('en-US')} an expression may be.`,
+    );
+  }
+
+  const ast = new Parser(tokens).parse();
   // Expressions are re-evaluated once per item, so caching the parse matters
   // on any workflow moving more than a handful of items.
   if (astCache.size > 5000) astCache.clear();

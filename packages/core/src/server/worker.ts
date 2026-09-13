@@ -243,7 +243,7 @@ async function runSubWorkflow(
 ): Promise<SubWorkflowResult> {
   const workflow = await prisma.workflow.findUnique({
     where: { id: request.workflowId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, graph: true },
   });
 
   if (!workflow) {
@@ -254,6 +254,13 @@ async function runSubWorkflow(
     workflowId: workflow.id,
     trigger: 'subworkflow',
     input: request.items,
+    // Being called by another workflow is the manual trigger's other job, so
+    // that is where the child starts. Without naming it, a child holding a
+    // webhook trigger as well would start at whichever of the two sits higher
+    // on the canvas. Absent when the child has no manual trigger — a workflow
+    // built around a webhook and also called directly — and then the first
+    // trigger on the canvas is the only sensible answer, same as before.
+    triggerNodeId: manualTriggerId(workflow.graph as unknown as Graph),
     parentExecutionId,
     parentNodeId: request.nodeId,
     // Waiting means running it here, so the queue must never see the row.
@@ -332,3 +339,15 @@ export async function tickScheduler(log: (message: string) => void = console.inf
   }
 }
 
+/**
+ * The manual trigger of a workflow being run by an Execute Workflow node.
+ *
+ * Undefined when there is none, or it is switched off, which leaves the run
+ * without a named trigger and falls back to the first one on the canvas.
+ *
+ * Exported for the test: it is the whole of the rule about where a sub-workflow
+ * run enters, and the rest of `runSubWorkflow` needs a database to reach.
+ */
+export function manualTriggerId(graph: Graph): string | undefined {
+  return graph.nodes.find((node) => node.type === 'trigger.manual' && !node.disabled)?.id;
+}

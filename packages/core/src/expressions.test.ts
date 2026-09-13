@@ -95,9 +95,31 @@ test('nesting a workflow would really use is still fine', () => {
   );
 });
 
-test('a long flat expression is not nesting, and is not capped', () => {
+test('a long flat expression is not nesting, and is not capped by the depth limit', () => {
   // 400 terms: the parser loops rather than recursing, which is the whole
   // reason the depth limit can be as low as it is.
   const sum = Array.from({ length: 400 }, () => '1').join(' + ');
   assert.equal(evaluateExpression(sum, scope({})), 400);
+});
+
+test('a flat expression long enough to overflow the evaluator is refused', () => {
+  // Flat in the parser and 10,000 deep in the tree it builds, which is where
+  // this used to come apart: the depth limit never saw it, and `evaluate`
+  // recursed once per term until the stack ran out. The length limit is what
+  // catches this shape, and it fails as an expression rather than as a
+  // RangeError from somewhere inside the runner.
+  const sum = Array.from({ length: 10_000 }, () => '1').join(' + ');
+  assert.throws(() => evaluateExpression(sum, scope({})), /tokens long, past the 2,000/);
+
+  // A member chain is the same story with a different token.
+  const chain = `$json${'.a'.repeat(10_000)}`;
+  assert.throws(() => evaluateExpression(chain, scope({})), /tokens long, past the 2,000/);
+});
+
+test('the length limit leaves an expression anyone would write alone', () => {
+  const chain = `$json${'.a'.repeat(50)}`;
+  assert.doesNotThrow(() => evaluateExpression(chain, scope({})));
+
+  const sum = Array.from({ length: 400 }, () => '1').join(' + ');
+  assert.doesNotThrow(() => evaluateExpression(sum, scope({})));
 });
