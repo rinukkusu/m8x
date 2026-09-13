@@ -10,6 +10,7 @@ import {
 import { getBinary, pruneOrphanBinaries, putBinary } from './binary.js';
 import { loadCredentialData } from './credentials.js';
 import { prisma } from './db.js';
+import { readExecutionInput } from './execution-input.js';
 import { startEmailPoller, stopEmailPoller } from './email-poller.js';
 import {
   claimExecution,
@@ -167,7 +168,7 @@ async function runClaimedExecution(
     return null;
   }
 
-  const { seedItems, triggerNodeId, resumeFromNodeId } = readInput(execution.input);
+  const { seedItems, triggerNodeId, resumeFromNodeId } = readExecutionInput(execution.input);
   const recorder = createExecutionRecorder(executionId);
 
   // A child runs under its parent's signal rather than starting a fresh hour of
@@ -331,39 +332,3 @@ export async function tickScheduler(log: (message: string) => void = console.inf
   }
 }
 
-interface ExecutionInput {
-  seedItems: Item[];
-  triggerNodeId?: string;
-  resumeFromNodeId?: string;
-}
-
-/**
- * Read back what `createExecution` stored.
- *
- * `startNodeId` is the older spelling, from when one field carried both "which
- * trigger fired" and "where to resume". Rows written before the split are still
- * sitting in the queue on an upgrade, and it meant both things at once there, so
- * that is what it is read as.
- */
-export function readInput(stored: unknown): ExecutionInput {
-  if (Array.isArray(stored)) return { seedItems: stored as Item[] };
-
-  if (stored && typeof stored === 'object') {
-    const shaped = stored as {
-      items?: unknown;
-      triggerNodeId?: unknown;
-      resumeFromNodeId?: unknown;
-      startNodeId?: unknown;
-    };
-    const legacy = typeof shaped.startNodeId === 'string' ? shaped.startNodeId : undefined;
-
-    return {
-      seedItems: Array.isArray(shaped.items) ? (shaped.items as Item[]) : [],
-      triggerNodeId: typeof shaped.triggerNodeId === 'string' ? shaped.triggerNodeId : legacy,
-      resumeFromNodeId:
-        typeof shaped.resumeFromNodeId === 'string' ? shaped.resumeFromNodeId : legacy,
-    };
-  }
-
-  return { seedItems: [] };
-}

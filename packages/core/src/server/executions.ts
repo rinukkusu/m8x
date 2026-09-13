@@ -5,6 +5,7 @@ import { analyseLoops } from '../graph.js';
 import type { Graph, Item } from '../types.js';
 import type { RunEvent, RunResult } from '../runner/index.js';
 import { prisma } from './db.js';
+import { readExecutionInput, storedExecutionInput } from './execution-input.js';
 import { enqueueExecution } from './queue.js';
 
 /**
@@ -69,28 +70,21 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
       workflowVersionId: versionId,
       status: 'queued',
       trigger: input.trigger,
-      input: (input.input ?? []) as unknown as Prisma.InputJsonValue,
+      // Both node ids ride along in the payload rather than getting columns of
+      // their own: they are read once, by the worker, on the way into the
+      // runner. `execution-input.ts` owns the shape, so the side that writes it
+      // and the side that reads it cannot drift apart.
+      input: storedExecutionInput({
+        seedItems: input.input ?? [],
+        triggerNodeId: input.triggerNodeId,
+        resumeFromNodeId: input.resumeFromNodeId,
+      }) as Prisma.InputJsonValue,
       retryOfId: input.retryOfId,
       parentExecutionId: input.parentExecutionId,
       parentNodeId: input.parentNodeId,
     },
     select: { id: true },
   });
-
-  // Both node ids ride along in the input payload rather than getting their own
-  // columns: they are read once, by the worker, on the way into the runner.
-  if (input.triggerNodeId || input.resumeFromNodeId) {
-    await prisma.execution.update({
-      where: { id: execution.id },
-      data: {
-        input: {
-          items: (input.input ?? []) as unknown as Prisma.InputJsonValue,
-          triggerNodeId: input.triggerNodeId,
-          resumeFromNodeId: input.resumeFromNodeId,
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
-  }
 
   if (input.enqueue !== false) await enqueueExecution({ executionId: execution.id });
 
@@ -328,16 +322,9 @@ export async function retryExecution(executionId: string, options: RetryOptions 
     include: { nodeRuns: { orderBy: { sequence: 'asc' } }, workflowVersion: true },
   });
 
-  const storedInput = original.input as
-    | { items?: Item[]; triggerNodeId?: string; startNodeId?: string }
-    | Item[]
-    | null;
-  const seedItems = Array.isArray(storedInput) ? storedInput : (storedInput?.items ?? []);
   // Whichever trigger the original run used, this one uses too. Without it a
   // workflow with more than one trigger would retry down the wrong branch.
-  const triggerNodeId = Array.isArray(storedInput)
-    ? undefined
-    : (storedInput?.triggerNodeId ?? storedInput?.startNodeId);
+  const { seedItems, triggerNodeId } = readExecutionInput(original.input);
 
   let resumeFromNodeId: string | undefined;
 
