@@ -1,5 +1,5 @@
 import type { NodeDescriptor, ParamSchema } from '../types.js';
-import { NODE_DESCRIPTORS } from './descriptors.js';
+import { NODE_DESCRIPTORS } from './descriptors/index.js';
 
 /**
  * The client-safe node surface: metadata and the helpers that read it.
@@ -101,4 +101,4 @@ export function validateParams(
   return issues;
 }
 
-export { NODE_DESCRIPTORS, COMPARISON_OPERATORS, conditionParams } from './descriptors.js';
+export { NODE_DESCRIPTORS, COMPARISON_OPERATORS, conditionParams } from './descriptors/index.js';

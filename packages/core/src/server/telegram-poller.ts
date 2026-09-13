@@ -1,9 +1,15 @@
-import { randomUUID } from 'node:crypto';
-
 import { telegramApiBase } from '../nodes/impl/telegram.js';
 import { loadCredentialData } from './credentials.js';
 import { prisma } from './db.js';
 import { createExecution } from './executions.js';
+import {
+  WORKER_ID,
+  createPoller,
+  groupTriggersByTarget,
+  type PollerLog,
+  type SubscribedTrigger,
+  type TargetGroup,
+} from './poller.js';
 import {
   allowedUpdatesFor,
   describeUpdate,
@@ -26,6 +32,9 @@ import {
  * five workflows is the supported arrangement, not a conflict to report. One
  * workflow answers /status, another handles photos, a third logs everything,
  * and each is edited and activated on its own.
+ *
+ * The loop, the leasing rhythm and the backoff are `poller.ts`; what is left
+ * here is the part that is actually about Telegram.
  */
 
 /** How long a worker holds a bot while polling it. Longer than one poll. */
@@ -44,114 +53,54 @@ const IDLE_MS = 10_000;
 const MIN_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 60_000;
 
-/** This process, so a lease says who holds it. */
-const WORKER_ID = `${process.pid}-${randomUUID().slice(0, 8)}`;
-
 // ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
 
-interface SubscribedTrigger {
-  workflowId: string;
-  nodeId: string;
-  config: TelegramTriggerConfig;
-}
+/** A bot is addressed by the credential holding its token. */
+type Bot = string;
+type BotGroup = TargetGroup<Bot, TelegramTriggerConfig>;
 
-let controller: AbortController | null = null;
-let loop: Promise<void> | null = null;
+const poller = createPoller<Bot, TelegramTriggerConfig>({
+  name: 'telegram',
+  idleMs: IDLE_MS,
+  // No interval: getUpdates holds the connection open, which paces the loop.
+  minBackoffMs: MIN_BACKOFF_MS,
+  maxBackoffMs: MAX_BACKOFF_MS,
+  describe: (credentialId) => `bot ${credentialId}`,
+  listTargets: () =>
+    groupTriggersByTarget<Bot, TelegramTriggerConfig>(
+      'telegram',
+      (config) => {
+        const credentialId = typeof config.credential === 'string' ? config.credential.trim() : '';
+        return credentialId === '' ? null : credentialId;
+      },
+      (credentialId) => credentialId,
+    ),
+  poll: pollBot,
+});
 
-/** Per-bot backoff, held in memory: a restart should retry immediately. */
-const backoff = new Map<string, { until: number; ms: number }>();
-
-export function startTelegramPoller(log: (message: string) => void = console.info): void {
-  if (controller) return;
-  controller = new AbortController();
-  const signal = controller.signal;
-  loop = pollForever(signal, log).catch((error) => {
-    console.error('[telegram] poller stopped unexpectedly', error);
-  });
+export function startTelegramPoller(log: PollerLog = console.info): void {
+  poller.start(log);
 }
 
 export async function stopTelegramPoller(): Promise<void> {
-  if (!controller) return;
-  controller.abort();
-  controller = null;
-  await loop?.catch(() => {});
-  loop = null;
-  backoff.clear();
+  await poller.stop();
 }
 
-async function pollForever(signal: AbortSignal, log: (message: string) => void): Promise<void> {
-  while (!signal.aborted) {
-    let bots: Map<string, SubscribedTrigger[]>;
-
-    try {
-      bots = await subscribedBots();
-    } catch (error) {
-      console.error('[telegram] could not load triggers', error);
-      await sleep(IDLE_MS, signal);
-      continue;
-    }
-
-    if (bots.size === 0) {
-      await sleep(IDLE_MS, signal);
-      continue;
-    }
-
-    // In parallel across bots, since each spends most of its time waiting on
-    // Telegram. Within a bot everything stays sequential.
-    const polled = await Promise.all(
-      [...bots].map(([credentialId, triggers]) => pollBot(credentialId, triggers, signal, log)),
-    );
-
-    // Nothing was polled, because every bot is either backing off or held by
-    // another worker. Long polling is what normally paces this loop, so without
-    // a wait here the losing worker would spin on the database.
-    if (!signal.aborted && !polled.includes(true)) await sleep(IDLE_MS, signal);
-  }
-}
-
-/** Enabled Telegram triggers on active workflows, grouped by bot. */
-async function subscribedBots(): Promise<Map<string, SubscribedTrigger[]>> {
-  const rows = await prisma.trigger.findMany({
-    where: { kind: 'telegram', enabled: true, workflow: { active: true } },
-    select: { workflowId: true, nodeId: true, config: true },
-  });
-
-  const bots = new Map<string, SubscribedTrigger[]>();
-
-  for (const row of rows) {
-    const config = (row.config ?? {}) as TelegramTriggerConfig;
-    const credentialId = typeof config.credential === 'string' ? config.credential.trim() : '';
-    if (credentialId === '') continue;
-
-    const existing = bots.get(credentialId);
-    const trigger: SubscribedTrigger = { workflowId: row.workflowId, nodeId: row.nodeId, config };
-    if (existing) existing.push(trigger);
-    else bots.set(credentialId, [trigger]);
-  }
-
-  return bots;
-}
-
-async function pollBot(
-  credentialId: string,
-  triggers: SubscribedTrigger[],
-  signal: AbortSignal,
-  log: (message: string) => void,
-): Promise<boolean> {
-  const waiting = backoff.get(credentialId);
-  if (waiting && waiting.until > Date.now()) return false;
+async function pollBot(group: BotGroup, signal: AbortSignal, log: PollerLog): Promise<boolean> {
+  const credentialId = group.target;
 
   const offset = await takeLease(credentialId);
   // Another worker holds this bot, which is the whole point of the lease.
   if (offset === null) return false;
 
   try {
-    const updates = await getUpdates(credentialId, offset, allowedUpdatesFor(triggers.map((t) => t.config)), signal);
+    const configs = group.triggers.map((trigger) => trigger.config);
+    const updates = await getUpdates(credentialId, offset, allowedUpdatesFor(configs), signal);
 
     for (const update of updates) {
-      await deliver(update, triggers, log);
+      await deliver(update, group.triggers, log);
     }
 
     // The offset is committed only once every execution exists. A crash in
@@ -161,30 +110,22 @@ async function pollBot(
     // ascending, but acknowledging less than was handled would replay a run.
     const highest = updates.reduce((max, update) => (update.update_id > max ? update.update_id : max), -1);
     await releaseLease(credentialId, highest >= 0 ? BigInt(highest) + 1n : undefined, null);
-    backoff.delete(credentialId);
     return true;
   } catch (error) {
-    if (signal.aborted) {
-      await releaseLease(credentialId, undefined, null).catch(() => {});
-      return false;
-    }
-
-    const reason = error instanceof Error ? error.message : String(error);
-    const previous = backoff.get(credentialId)?.ms ?? 0;
-    const ms = Math.min(previous === 0 ? MIN_BACKOFF_MS : previous * 2, MAX_BACKOFF_MS);
-    backoff.set(credentialId, { until: Date.now() + ms, ms });
-
+    // The lease is this file's to let go of either way; the backoff and the log
+    // line that follow a failure belong to the loop, so the error carries on up.
+    const reason = signal.aborted ? null : error instanceof Error ? error.message : String(error);
     await releaseLease(credentialId, undefined, reason).catch(() => {});
-    log(`[telegram] bot ${credentialId} failed, retrying in ${Math.round(ms / 1000)}s: ${reason}`);
-    return false;
+    if (signal.aborted) return false;
+    throw error;
   }
 }
 
 /** One execution per trigger that wants this update. */
 async function deliver(
   update: TelegramUpdate,
-  triggers: SubscribedTrigger[],
-  log: (message: string) => void,
+  triggers: Array<SubscribedTrigger<TelegramTriggerConfig>>,
+  log: PollerLog,
 ): Promise<void> {
   const described = describeUpdate(update);
   const item = seedItemFor(update);
@@ -198,7 +139,7 @@ async function deliver(
         trigger: 'telegram',
         input: [item],
         // Named explicitly, so a workflow with two triggers starts at this one.
-        startNodeId: trigger.nodeId,
+        triggerNodeId: trigger.nodeId,
       });
 
       log(`[telegram] queued ${executionId} for workflow ${trigger.workflowId}`);
@@ -290,23 +231,4 @@ async function getUpdates(
   }
 
   return Array.isArray(body.result) ? (body.result as TelegramUpdate[]) : [];
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, ms);
-    signal.addEventListener('abort', done, { once: true });
-
-    function done(): void {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    }
-  });
 }

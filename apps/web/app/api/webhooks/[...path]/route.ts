@@ -58,6 +58,10 @@ async function handle(request: NextRequest, context: { params: Promise<{ path: s
   const { executionId } = await createExecution({
     workflowId: trigger.workflowId,
     trigger: 'webhook',
+    // The node behind this path, not just the workflow: a workflow can hold a
+    // webhook trigger alongside a schedule, and only the one that fired should
+    // produce items.
+    triggerNodeId: trigger.nodeId,
     input: [
       {
         json: {

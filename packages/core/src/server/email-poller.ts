@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import { ImapFlow, type FetchMessageObject } from 'imapflow';
 import { simpleParser, type ParsedMail } from 'mailparser';
 
@@ -18,6 +16,14 @@ import {
   type ParsedEmail,
 } from './email-messages.js';
 import { createExecution } from './executions.js';
+import {
+  WORKER_ID,
+  createPoller,
+  groupTriggersByTarget,
+  type PollerLog,
+  type SubscribedTrigger,
+  type TargetGroup,
+} from './poller.js';
 
 /**
  * Polling IMAP, one poller per mailbox rather than one per trigger.
@@ -32,6 +38,9 @@ import { createExecution } from './executions.js';
  * Polling rather than IDLE: IDLE means holding an open connection per folder
  * for as long as the workflow is active, which does not fit a lease that has to
  * be handed between workers. A minute of latency is the price.
+ *
+ * The loop, the leasing rhythm and the backoff are `poller.ts`, shared with
+ * Telegram; what is left here is the part that is actually about IMAP.
  */
 
 /** How long a worker holds a mailbox while polling it. Longer than one poll. */
@@ -53,17 +62,9 @@ const MAX_PER_POLL = 25;
 /** Give up on a mailbox that will not answer. */
 const CONNECT_TIMEOUT_MS = 30_000;
 
-const WORKER_ID = `${process.pid}-${randomUUID().slice(0, 8)}`;
-
 // ---------------------------------------------------------------------------
 // The loop
 // ---------------------------------------------------------------------------
-
-interface SubscribedTrigger {
-  workflowId: string;
-  nodeId: string;
-  config: EmailTriggerConfig;
-}
 
 /** A mailbox is a credential and a folder: one cursor, many triggers. */
 interface MailboxKey {
@@ -71,94 +72,48 @@ interface MailboxKey {
   folder: string;
 }
 
-let controller: AbortController | null = null;
-let loop: Promise<void> | null = null;
+type MailboxGroup = TargetGroup<MailboxKey, EmailTriggerConfig>;
 
-const backoff = new Map<string, { until: number; ms: number }>();
+const poller = createPoller<MailboxKey, EmailTriggerConfig>({
+  name: 'email',
+  idleMs: IDLE_MS,
+  // Unlike Telegram there is no long poll to pace this, so the interval is the
+  // pacing.
+  intervalMs: POLL_INTERVAL_MS,
+  minBackoffMs: MIN_BACKOFF_MS,
+  maxBackoffMs: MAX_BACKOFF_MS,
+  describe: (mailbox) => mailbox.folder,
+  listTargets: () =>
+    groupTriggersByTarget<MailboxKey, EmailTriggerConfig>(
+      'email',
+      (config) => {
+        const credentialId = typeof config.credential === 'string' ? config.credential.trim() : '';
+        return credentialId === '' ? null : { credentialId, folder: normaliseFolder(config.folder) };
+      },
+      keyOf,
+    ),
+  poll: pollMailbox,
+});
 
-export function startEmailPoller(log: (message: string) => void = console.info): void {
-  if (controller) return;
-  controller = new AbortController();
-  const signal = controller.signal;
-  loop = pollForever(signal, log).catch((error) => {
-    console.error('[email] poller stopped unexpectedly', error);
-  });
+export function startEmailPoller(log: PollerLog = console.info): void {
+  poller.start(log);
 }
 
 export async function stopEmailPoller(): Promise<void> {
-  if (!controller) return;
-  controller.abort();
-  controller = null;
-  await loop?.catch(() => {});
-  loop = null;
-  backoff.clear();
-}
-
-async function pollForever(signal: AbortSignal, log: (message: string) => void): Promise<void> {
-  while (!signal.aborted) {
-    let mailboxes: Map<string, SubscribedTrigger[]>;
-
-    try {
-      mailboxes = await subscribedMailboxes();
-    } catch (error) {
-      console.error('[email] could not load triggers', error);
-      await sleep(IDLE_MS, signal);
-      continue;
-    }
-
-    if (mailboxes.size === 0) {
-      await sleep(IDLE_MS, signal);
-      continue;
-    }
-
-    // In parallel across mailboxes, since each spends its time waiting on a
-    // server. Within one mailbox everything stays sequential.
-    await Promise.all([...mailboxes].map(([key, triggers]) => pollMailbox(parseKey(key), triggers, signal, log)));
-
-    // Unlike Telegram there is no long poll to pace this, so the interval is
-    // the pacing.
-    if (!signal.aborted) await sleep(POLL_INTERVAL_MS, signal);
-  }
-}
-
-/** Enabled email triggers on active workflows, grouped by mailbox. */
-async function subscribedMailboxes(): Promise<Map<string, SubscribedTrigger[]>> {
-  const rows = await prisma.trigger.findMany({
-    where: { kind: 'email', enabled: true, workflow: { active: true } },
-    select: { workflowId: true, nodeId: true, config: true },
-  });
-
-  const mailboxes = new Map<string, SubscribedTrigger[]>();
-
-  for (const row of rows) {
-    const config = (row.config ?? {}) as EmailTriggerConfig;
-    const credentialId = typeof config.credential === 'string' ? config.credential.trim() : '';
-    if (credentialId === '') continue;
-
-    const key = keyOf({ credentialId, folder: normaliseFolder(config.folder) });
-    const trigger: SubscribedTrigger = { workflowId: row.workflowId, nodeId: row.nodeId, config };
-
-    const existing = mailboxes.get(key);
-    if (existing) existing.push(trigger);
-    else mailboxes.set(key, [trigger]);
-  }
-
-  return mailboxes;
+  await poller.stop();
 }
 
 async function pollMailbox(
-  mailbox: MailboxKey,
-  triggers: SubscribedTrigger[],
+  group: MailboxGroup,
   signal: AbortSignal,
-  log: (message: string) => void,
-): Promise<void> {
-  const key = keyOf(mailbox);
-  const waiting = backoff.get(key);
-  if (waiting && waiting.until > Date.now()) return;
+  log: PollerLog,
+): Promise<boolean> {
+  const mailbox = group.target;
+  const triggers = group.triggers;
 
   const cursor = await takeLease(mailbox);
   // Another worker holds this mailbox, which is the point of the lease.
-  if (cursor === null) return;
+  if (cursor === null) return false;
 
   let client: ImapFlow | null = null;
 
@@ -184,7 +139,7 @@ async function pollMailbox(
             ? `[email] watching ${mailbox.folder} from UID ${from}, only new mail from here`
             : `[email] ${mailbox.folder} was renumbered by the server, resyncing from UID ${from}`,
         );
-        return;
+        return true;
       }
 
       const handled = await drain(client, mailbox, cursor.lastUid, triggers, signal, log);
@@ -192,23 +147,17 @@ async function pollMailbox(
       // Committed only once every execution exists. A crash in between
       // redelivers the message, which beats losing it.
       await releaseLease(mailbox, handled > cursor.lastUid ? { lastUid: handled, uidValidity } : null, null);
-      backoff.delete(key);
+      return true;
     } finally {
       lock.release();
     }
   } catch (error) {
-    if (signal.aborted) {
-      await releaseLease(mailbox, null, null).catch(() => {});
-      return;
-    }
-
-    const reason = error instanceof Error ? error.message : String(error);
-    const previous = backoff.get(key)?.ms ?? 0;
-    const ms = Math.min(previous === 0 ? MIN_BACKOFF_MS : previous * 2, MAX_BACKOFF_MS);
-    backoff.set(key, { until: Date.now() + ms, ms });
-
+    // The lease is this file's to let go of either way; the backoff and the log
+    // line that follow a failure belong to the loop, so the error carries on up.
+    const reason = signal.aborted ? null : error instanceof Error ? error.message : String(error);
     await releaseLease(mailbox, null, reason).catch(() => {});
-    log(`[email] ${mailbox.folder} failed, retrying in ${Math.round(ms / 1000)}s: ${reason}`);
+    if (signal.aborted) return false;
+    throw error;
   } finally {
     // logout() is the polite close; a socket that is already broken should not
     // turn into a second failure on the way out.
@@ -224,9 +173,9 @@ async function drain(
   client: ImapFlow,
   mailbox: MailboxKey,
   lastUid: bigint,
-  triggers: SubscribedTrigger[],
+  triggers: Array<SubscribedTrigger<EmailTriggerConfig>>,
   signal: AbortSignal,
-  log: (message: string) => void,
+  log: PollerLog,
 ): Promise<bigint> {
   const wantBytes = anyWantsAttachmentBytes(triggers.map((trigger) => trigger.config));
 
@@ -287,7 +236,11 @@ async function drain(
 }
 
 /** One execution for one trigger, with this trigger's own copy of the bytes. */
-async function deliver(email: ParsedEmail, mailbox: MailboxKey, trigger: SubscribedTrigger): Promise<void> {
+async function deliver(
+  email: ParsedEmail,
+  mailbox: MailboxKey,
+  trigger: SubscribedTrigger<EmailTriggerConfig>,
+): Promise<void> {
   const binaries: BinaryData[] = [];
 
   if (wantsAttachmentBytes(trigger.config)) {
@@ -312,7 +265,7 @@ async function deliver(email: ParsedEmail, mailbox: MailboxKey, trigger: Subscri
     trigger: 'email',
     input: [item],
     // Named explicitly, so a workflow with two triggers starts at this one.
-    startNodeId: trigger.nodeId,
+    triggerNodeId: trigger.nodeId,
   });
 
   // Now that the run exists, the bytes belong to it and go when it does.
@@ -473,24 +426,3 @@ function keyOf(mailbox: MailboxKey): string {
   return `${mailbox.credentialId.length}:${mailbox.credentialId}${mailbox.folder}`;
 }
 
-function parseKey(key: string): MailboxKey {
-  const colon = key.indexOf(':');
-  const length = Number(key.slice(0, colon));
-  const rest = key.slice(colon + 1);
-  return { credentialId: rest.slice(0, length), folder: rest.slice(length) };
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, ms);
-    signal.addEventListener('abort', done, { once: true });
-
-    function done(): void {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', done);
-      resolve();
-    }
-  });
-}
