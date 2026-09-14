@@ -7,19 +7,23 @@ import {
   Folder,
   FolderPlus,
   Inbox,
+  Copy,
   MoreHorizontal,
+  Pencil,
   Plus,
+  Trash2,
   Workflow as WorkflowIcon,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 
 import {
   createFolderAction,
   createWorkflowAction,
   deleteFolderAction,
   deleteWorkflowAction,
+  duplicateWorkflowAction,
   moveFolderAction,
   moveWorkflowAction,
   renameFolderAction,
@@ -75,6 +79,9 @@ export function WorkflowBrowser({
         setError(result.error ?? 'That did not work.');
         return;
       }
+      // An action can succeed and still have something to say — a copy whose
+      // webhook path was taken in the meantime is saved, and worth mentioning.
+      if (result.error) setError(result.error);
       onDone?.(result.id);
       router.refresh();
     });
@@ -218,6 +225,7 @@ export function WorkflowBrowser({
                   <WorkflowCard
                     workflow={workflow}
                     onRename={(name) => apply(() => renameWorkflowAction(workflow.id, name))}
+                    onDuplicate={() => apply(() => duplicateWorkflowAction(workflow.id))}
                     onDelete={() => apply(() => deleteWorkflowAction(workflow.id))}
                   />
                 </li>
@@ -392,10 +400,12 @@ function FolderRow({
 function WorkflowCard({
   workflow,
   onRename,
+  onDuplicate,
   onDelete,
 }: {
   workflow: WorkflowRow;
   onRename: (name: string) => void;
+  onDuplicate: () => void;
   onDelete: () => void;
 }) {
   return (
@@ -423,22 +433,139 @@ function WorkflowCard({
 
       <Badge tone={workflow.active ? 'success' : 'neutral'}>{workflow.active ? 'active' : 'inactive'}</Badge>
 
+      <RowMenu
+        label={`Options for ${workflow.name}`}
+        items={[
+          {
+            label: 'Rename',
+            icon: Pencil,
+            onSelect: () => {
+              const name = window.prompt('Rename workflow', workflow.name);
+              if (name) onRename(name);
+            },
+          },
+          { label: 'Duplicate', icon: Copy, onSelect: onDuplicate },
+          {
+            label: 'Delete',
+            icon: Trash2,
+            danger: true,
+            onSelect: () => {
+              if (window.confirm(`Delete "${workflow.name}"? Its run history goes too.`)) onDelete();
+            },
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+interface MenuItem {
+  label: string;
+  icon: typeof Copy;
+  onSelect: () => void;
+  danger?: boolean;
+}
+
+/**
+ * The row's actions.
+ *
+ * This replaces a `window.prompt` asking the user to type "rename" or
+ * "delete" — which worked with two actions and would not survive a third.
+ * Small enough to own rather than take a menu library for: a button, a list,
+ * and closing on an outside click or Escape.
+ */
+function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
+  // Where the panel goes, in viewport coordinates. The list is a scrolling
+  // pane, so a panel positioned inside it is clipped by that scroll container
+  // — which hides the menu entirely on the bottom rows. Fixed positioning off
+  // the button's own rect is what gets it out of the pane.
+  const [at, setAt] = useState<{ top: number; right: number } | null>(null);
+  const open = at !== null;
+  const container = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+
+  function toggle() {
+    if (open) {
+      setAt(null);
+      return;
+    }
+    const rect = button.current?.getBoundingClientRect();
+    if (rect) setAt({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+  }
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: MouseEvent) {
+      if (!container.current?.contains(event.target as Node)) setAt(null);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setAt(null);
+    }
+    // The panel no longer moves with the row it belongs to, so scrolling or
+    // resizing under it would leave it stranded. Closing is the honest answer
+    // and costs nothing — the button is right there.
+    function onReflow() {
+      setAt(null);
+    }
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onReflow, true);
+    window.addEventListener('resize', onReflow);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onReflow, true);
+      window.removeEventListener('resize', onReflow);
+    };
+  }, [open]);
+
+  return (
+    <div ref={container} className="relative shrink-0">
       <button
+        ref={button}
         type="button"
-        onClick={() => {
-          const choice = window.prompt('Type "rename" or "delete"', 'rename');
-          if (choice === 'rename') {
-            const name = window.prompt('Rename workflow', workflow.name);
-            if (name) onRename(name);
-          } else if (choice === 'delete') {
-            if (window.confirm(`Delete "${workflow.name}"? Its run history goes too.`)) onDelete();
-          }
-        }}
-        className="shrink-0 text-ink-faint opacity-0 transition-opacity hover:text-ink group-hover:opacity-100"
-        aria-label={`Options for ${workflow.name}`}
+        onClick={toggle}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cx(
+          'text-ink-faint transition-opacity hover:text-ink',
+          // Always visible once open, or the menu would hang under nothing the
+          // moment the pointer left the row.
+          open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+        )}
       >
         <MoreHorizontal className="size-4" />
       </button>
+
+      {at ? (
+        <div
+          role="menu"
+          style={{ top: at.top, right: at.right }}
+          className="fixed z-50 min-w-40 overflow-hidden rounded-lg border border-line bg-surface-1 py-1 shadow-lg"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setAt(null);
+                item.onSelect();
+              }}
+              className={cx(
+                'flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors',
+                item.danger ? 'text-bad hover:bg-bad/10' : 'text-ink hover:bg-surface-2',
+              )}
+            >
+              <item.icon className="size-3.5 shrink-0" />
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

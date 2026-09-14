@@ -9,6 +9,7 @@ export * from './server/folders.js';
 export * from './server/executions.js';
 export * from './server/pins.js';
 export * from './server/triggers.js';
+export * from './server/duplicate.js';
 export * from './server/telegram-updates.js';
 export * from './server/telegram-poller.js';
 export * from './server/email-messages.js';

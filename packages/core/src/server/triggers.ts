@@ -57,7 +57,7 @@ export async function syncTriggers(workflowId: string, graph: Graph, active: boo
     // of m8x than this one. Neither is something to reconcile.
     if (!kind) continue;
 
-    const webhookPath = kind === 'webhook' ? normalisePath(node.params.path) : null;
+    const webhookPath = kind === 'webhook' ? normaliseWebhookPath(node.params.path) : null;
 
     if (kind === 'webhook') {
       if (!webhookPath) continue;
@@ -180,7 +180,14 @@ export function webhookUrlFor(path: string): string {
   return `${base.replace(/\/$/, '')}/api/webhooks/${path}`;
 }
 
-function normalisePath(value: unknown): string | null {
+/**
+ * A webhook path as it will be stored, or null when it is not usable.
+ *
+ * Exported because duplicating a workflow has to mint a new path and must
+ * agree with this about what a path may look like — two copies of the rule
+ * would drift, and the copy's trigger would be the thing that broke.
+ */
+export function normaliseWebhookPath(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim().replace(/^\/+|\/+$/g, '');
   if (trimmed === '') return null;

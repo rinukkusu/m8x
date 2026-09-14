@@ -27,13 +27,14 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react';
-import { AlertTriangle, ArrowLeft, ExternalLink, Pin, Play, Plus, Save } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Copy, ExternalLink, Pin, Play, Plus, Save } from 'lucide-react';
 import * as icons from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 
 import {
+  duplicateWorkflowAction,
   pinNodeOutputAction,
   runStateAction,
   runWorkflowAction,
@@ -348,6 +349,32 @@ function EditorInner({
     });
   }
 
+  /**
+   * Copy this workflow and open the copy.
+   *
+   * Saves first when the canvas is ahead of what is stored, for the same reason
+   * Run does: copying the saved graph while the screen shows something else is
+   * the kind of surprise you only notice later.
+   *
+   * The copy is always inactive, so it cannot answer the original's schedule or
+   * webhook. If its reissued path was taken in the race between minting and
+   * saving, the copy's own Activate says so — which is the moment it matters.
+   */
+  function duplicate() {
+    const go = () =>
+      startTransition(async () => {
+        const result = await duplicateWorkflowAction(workflow.id);
+        if (!result.ok || !result.id) {
+          setMessage({ tone: 'bad', text: result.error ?? 'That could not be copied.' });
+          return;
+        }
+        router.push(`/workflows/${result.id}`);
+      });
+
+    if (dirty) save(go);
+    else go();
+  }
+
   function toggleActive() {
     startTransition(async () => {
       const result = await setActiveAction(workflow.id, !workflow.active);
@@ -411,6 +438,11 @@ function EditorInner({
         <Button size="sm" onClick={() => save()} disabled={pending || !dirty}>
           <Save className="size-3.5" />
           Save
+        </Button>
+
+        <Button size="sm" onClick={duplicate} disabled={pending}>
+          <Copy className="size-3.5" />
+          Duplicate
         </Button>
 
         <Button size="sm" onClick={toggleActive} disabled={pending}>
