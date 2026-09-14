@@ -77,6 +77,7 @@ model Workflow {
   versions   WorkflowVersion[]
   executions Execution[]
   triggers   Trigger[]
+  pins       PinnedData[]
 
   @@index([folderId])
   @@index([active])
@@ -299,6 +300,10 @@ enum NodeRunStatus {
   success
   failed
   skipped
+  // Did not run: the editor had frozen this node's output, and these are the
+  // items it was frozen with. Its own status rather than `success`, so a run
+  // opened next week still says which of its steps actually happened.
+  pinned
 }
 
 model NodeRun {
@@ -349,6 +354,44 @@ model Credential {
   updatedAt DateTime @updatedAt
 
   @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Pinned data
+//
+// A frozen node output the editor replays instead of running the node, so
+// iterating on a workflow does not re-fire the trigger and everything under it.
+//
+// Its own table rather than a field on the graph node. The graph is snapshotted
+// into a WorkflowVersion on every save and is what gets exported; a pin is
+// scratch data belonging to one person editing one workflow, and it should
+// travel with neither. Mostly, though, it means a live run cannot reach a pin
+// at all: the worker loads these only for a run that asked for them, and only
+// the editor asks. On the graph it would take a flag meaning "ignore the pins",
+// and forgetting that flag is an activated workflow serving stale fake data.
+//
+// See docs/pinned-data.md.
+// ---------------------------------------------------------------------------
+
+model PinnedData {
+  id         String   @id @default(cuid())
+  workflowId String
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  nodeId     String
+
+  // Exactly what the node produced, one array per output branch, capped by the
+  // same code that caps a NodeRun payload.
+  items     Json
+  truncated Boolean @default(false)
+
+  // The run it came from, so the editor can say how old a pin is and link back
+  // to where it was captured. Nulled rather than cascaded: retention deleting
+  // the source run should not silently delete the pin somebody is working with.
+  sourceExecutionId String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([workflowId, nodeId])
 }
 
 // ---------------------------------------------------------------------------

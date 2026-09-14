@@ -34,7 +34,7 @@ import {
 // code path.
 // ---------------------------------------------------------------------------
 
-export type NodeRunStatus = 'success' | 'failed' | 'skipped';
+export type NodeRunStatus = 'success' | 'failed' | 'skipped' | 'pinned';
 
 export interface NodeStartEvent {
   type: 'nodeStart';
@@ -133,6 +133,18 @@ export interface RunnerContext {
   resumeFromNodeId?: string;
   /** Node outputs recovered from a previous execution, keyed by node id. */
   restoredOutputs?: Record<string, Item[][]>;
+  /**
+   * Outputs the editor froze, keyed by node id. A node listed here does not
+   * execute: it emits its pinned items and everything downstream gathers input
+   * from them as if it had produced them.
+   *
+   * Separate from `restoredOutputs` because the two answer different questions.
+   * That one means "everything before the retry point already ran", and only
+   * ever covers a prefix of the order. A pin can sit anywhere, with live nodes
+   * on both sides of it, and the detail view has to be able to tell the author
+   * froze this from this was restored.
+   */
+  pinnedOutputs?: Record<string, Item[][]>;
   signal: AbortSignal;
   /** Decrypt a credential by its id. Injected so core stays database-free. */
   loadCredential(credentialId: string): Promise<Record<string, string> | null>;
@@ -298,6 +310,33 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
         await ctx.emit(makeSkipEvent(node, sequence++, 'upstream branch was not taken', iteration));
         return OK;
       }
+    }
+
+    // A pin stands in for the node. Checked here rather than at the top of the
+    // step, because everything above decides whether this node is reached at
+    // all, and freezing what a node produces should not resurrect a branch the
+    // If rejected or turn a second trigger into the one that fired.
+    // `options.input` is set only for a loop node's own turn, which is never
+    // pinnable: a pin would freeze every pass to the same batch.
+    const pinned = options.input === undefined ? ctx.pinnedOutputs?.[node.id] : undefined;
+    if (pinned) {
+      const output = normaliseOutput(pinned, resolveOutputs(definition, node.params));
+      outputs[node.id] = output;
+      await ctx.emit({
+        type: 'nodeFinish',
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeType: node.type,
+        attempt: 1,
+        iteration,
+        sequence: sequence++,
+        status: 'pinned',
+        input,
+        output: output.flat(),
+        durationMs: 0,
+        finishedAt: new Date(),
+      });
+      return OK;
     }
 
     const continueOnFail = node.continueOnFail === true && options.ignoreContinueOnFail !== true;

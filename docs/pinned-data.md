@@ -91,23 +91,36 @@ nodes on both sides of it. Reusing one field for both questions would mean the
 runner could not tell "this was restored from an earlier run" from "the author
 froze this", and those two want different things on screen.
 
-A pinned node is checked before every other rule in `step`, including the
-disabled check and the trigger check. A pin means "these are the items", and it
-should mean that regardless of what the node is. In particular it is how a
-trigger gets its payload: pinning a webhook trigger's output is the whole point
-of the feature.
+The pin is applied late in `step`, after everything that decides whether the
+node is reached at all and before anything that decides what it does. A trigger
+gets its payload this way — pinning a webhook trigger's output is the whole point
+of the feature — but only when it is the trigger the run actually started from.
 
-Two rules that are not obvious:
+Three rules that follow from that placement, none of them obvious:
 
-**A pin does not suppress a skip.** A pinned node on a branch that the upstream
-`If` did not take still skips. Its pinned items describe what it produces when it
-runs, not whether it is reached, and having a pin resurrect a dead branch would
-make the canvas lie about control flow.
+**A pin does not suppress a skip.** A pinned node the run never reached — one
+hanging off a trigger that did not fire, say — still skips. Its pinned items
+describe what it produces when it runs, not whether it is reached, and letting a
+pin resurrect a branch this run never took would make the canvas lie about
+control flow.
 
-**Pins inside a loop region are refused**, rather than silently applied. A loop
-body runs once per pass, and a pin would freeze every pass to the same items,
-which is never what anyone means. Refusing by name at validation time is honest;
-applying it would produce a run that looks fine and is wrong.
+Note where the runner already draws that line: a node downstream of an `If`
+branch that matched nothing *is* reached, and runs with zero items. It is
+pinned like any other reached node, so downstream sees the pinned items where an
+unpinned run would see none. That is not a special case, it is what a pin is —
+but it is the reason a pinned workflow is not evidence that the real one
+works.
+
+**Disabling beats pinning.** A node that is both disabled and pinned passes its
+input through, as any disabled node does. Disabling is the more deliberate "take
+this out of the way" of the two, and a node that ignored it because of a pin set
+last week would be baffling.
+
+**Pins inside a loop region are refused** at the point a pin is created, rather
+than silently applied. A loop body runs once per pass, and a pin would freeze
+every pass to the same items, which is never what anyone means. The loop node
+itself is refused the same way and by construction: the runner hands it its
+batch explicitly, so there is nowhere for a pin to take effect.
 
 ## A fourth NodeRun status
 
