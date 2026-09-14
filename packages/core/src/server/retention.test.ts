@@ -118,6 +118,24 @@ test('the budget stops the job and says there is more to do', async () => {
   assert.equal(result.moreToDo, true);
 });
 
+test('a backlog of successes does not starve the failure clock', async () => {
+  // The state a first run against an old instance is in. With one shared budget
+  // the failure pass would not get a query in for as long as the catch-up took,
+  // which is the clock an operator is least willing to have quietly unenforced.
+  const store = fakeStore({ success: ids('s', 10_000), 'failed,cancelled': ids('f', 4) });
+
+  const result = await pruneExecutions({
+    now: NOW,
+    policy: { successDays: 7, failureDays: 30 },
+    store,
+    batchSize: 100,
+    maxPerPass: 200,
+  });
+
+  assert.equal(result.deleted, 204);
+  assert.equal(result.moreToDo, true);
+});
+
 test('nothing to delete is no work', async () => {
   const store = fakeStore({});
 

@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 
 import { setRetentionPolicyAction } from '@/app/actions/retention';
-import { Button, Field, Input, Select, formatRelative } from './ui';
+import { Button, Field, Input, Select } from './ui';
 
 /**
  * The retention policy, and how much history there is right now.
@@ -18,7 +18,8 @@ import { Button, Field, Input, Select, formatRelative } from './ui';
 export interface HistoryVolumeView {
   executions: number;
   nodeRuns: number;
-  binaryBytes: number;
+  diskBytes: number;
+  /** ISO, or null on an instance that has never run anything. */
   oldest: string | null;
 }
 
@@ -36,18 +37,35 @@ export function RetentionSettings({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [draft, setDraft] = useState(policy);
+  // What is in the boxes, as typed. Parsing on the way in would mean a field
+  // cleared mid-edit silently kept the old number, and saving the other field
+  // would then write something other than what is on screen.
+  const [draft, setDraft] = useState<Draft>(() => ({
+    successDays: asText(policy.successDays),
+    failureDays: asText(policy.failureDays),
+  }));
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const changed = draft.successDays !== policy.successDays || draft.failureDays !== policy.failureDays;
+  const parsed = {
+    successDays: parseDays(draft.successDays),
+    failureDays: parseDays(draft.failureDays),
+  };
+  const valid = parsed.successDays !== 'invalid' && parsed.failureDays !== 'invalid';
+  const changed =
+    valid &&
+    (parsed.successDays !== policy.successDays || parsed.failureDays !== policy.failureDays);
 
   function save(): void {
+    if (!valid) return;
     setError(null);
     setSaved(false);
 
     startTransition(async () => {
-      const result = await setRetentionPolicyAction(draft);
+      const result = await setRetentionPolicyAction({
+        successDays: parsed.successDays as number | null,
+        failureDays: parsed.failureDays as number | null,
+      });
       if (!result.ok) {
         setError(result.error ?? 'That could not be saved.');
         return;
@@ -73,9 +91,16 @@ export function RetentionSettings({
           <dl className="space-y-1.5 text-sm">
             <Row label="Executions stored" value={volume.executions.toLocaleString()} />
             <Row label="Node runs stored" value={volume.nodeRuns.toLocaleString()} />
-            <Row label="Stored files" value={formatBytes(volume.binaryBytes)} />
-            <Row label="Oldest run" value={volume.oldest ? formatRelative(volume.oldest) : 'None yet'} />
+            <Row label="On disk" value={formatBytes(volume.diskBytes)} />
+            {/* The date in full. A relative one loses the year, and "Sep 3"
+                for a run from two years ago is the opposite of the point. */}
+            <Row label="Oldest run" value={volume.oldest ? volume.oldest.slice(0, 10) : 'None yet'} />
           </dl>
+
+          <p className="text-xs text-ink-faint">
+            Row counts are estimates. Counting them exactly means reading every row, which is slow on exactly the
+            instance this setting is for.
+          </p>
         </div>
 
         <div className="space-y-3 rounded-lg border border-line bg-surface-1 px-4 py-3">
@@ -94,6 +119,10 @@ export function RetentionSettings({
             onChange={(failureDays) => setDraft((current) => ({ ...current, failureDays }))}
             disabled={pending}
           />
+
+          {!valid ? (
+            <p className="text-xs text-ink-faint">Both ages need a whole number of days, at least one.</p>
+          ) : null}
 
           {error ? (
             <p className="rounded-md border border-bad/25 bg-bad/10 px-3 py-2 text-xs text-bad">{error}</p>
@@ -126,6 +155,10 @@ function Row({ label, value }: { label: string; value: string }) {
  * Two controls rather than a magic value in one, because "0 means keep
  * everything" is the kind of thing that gets typed by accident and noticed a
  * quarter later.
+ *
+ * The text is handed straight up as typed. Nothing is parsed here: the only
+ * place a number is read out of these boxes is the moment of saving, so what is
+ * on screen and what gets written cannot come apart.
  */
 function DaysField({
   label,
@@ -136,29 +169,18 @@ function DaysField({
 }: {
   label: string;
   hint: string;
-  value: number | null;
-  onChange: (value: number | null) => void;
+  /** The typed text, or null for "keep forever". */
+  value: string | null;
+  onChange: (value: string | null) => void;
   disabled: boolean;
 }) {
-  // Kept while the field is empty mid-typing, so clearing it does not snap back
-  // to a number the operator is in the middle of replacing.
-  const [text, setText] = useState(value === null ? '' : String(value));
-
   return (
     <Field label={label} hint={hint}>
       <div className="flex items-center gap-2">
         <Select
           value={value === null ? 'forever' : 'days'}
           disabled={disabled}
-          onChange={(event) => {
-            if (event.target.value === 'forever') {
-              onChange(null);
-              return;
-            }
-            const parsed = Number(text);
-            onChange(Number.isInteger(parsed) && parsed > 0 ? parsed : 7);
-            if (text === '') setText('7');
-          }}
+          onChange={(event) => onChange(event.target.value === 'forever' ? null : '7')}
           className="w-36"
         >
           <option value="days">A number of days</option>
@@ -170,14 +192,10 @@ function DaysField({
             <Input
               type="number"
               min={1}
-              value={text}
+              value={value}
               disabled={disabled}
               className="w-24"
-              onChange={(event) => {
-                setText(event.target.value);
-                const parsed = Number(event.target.value);
-                if (Number.isInteger(parsed) && parsed > 0) onChange(parsed);
-              }}
+              onChange={(event) => onChange(event.target.value)}
             />
             <span className="text-xs text-ink-faint">days</span>
           </>
@@ -185,6 +203,30 @@ function DaysField({
       </div>
     </Field>
   );
+}
+
+/** What is in the two boxes: the text as typed, or null for "keep forever". */
+interface Draft {
+  successDays: string | null;
+  failureDays: string | null;
+}
+
+function asText(days: number | null): string | null {
+  return days === null ? null : String(days);
+}
+
+/**
+ * A typed age as it will be sent, or `invalid` while it is not a usable number.
+ *
+ * Only the shape is checked here, so the box can say something before a round
+ * trip. The range is core's to rule on — it is the side that has to agree with
+ * the job doing the deleting.
+ */
+function parseDays(text: string | null): number | null | 'invalid' {
+  if (text === null) return null;
+  if (text.trim() === '') return 'invalid';
+  const parsed = Number(text);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 'invalid';
 }
 
 function formatBytes(bytes: number): string {

@@ -142,7 +142,7 @@ export default async function InsightsPage() {
           volume={{
             executions: volume.executions,
             nodeRuns: volume.nodeRuns,
-            binaryBytes: volume.binaryBytes,
+            diskBytes: volume.diskBytes,
             oldest: volume.oldest?.toISOString() ?? null,
           }}
         />

@@ -192,21 +192,25 @@ export async function pruneExecutions(options: PruneOptions = {}): Promise<Prune
   let moreToDo = false;
 
   for (const pass of prunePasses(policy, now)) {
-    while (deleted < budget) {
-      const ids = await store.findExpired(pass, Math.min(batchSize, budget - deleted));
+    // The budget is per clock rather than shared. Sharing it would mean that
+    // while a large backlog of successes is being worked off — which is exactly
+    // the state a first run against an old instance is in — the failure clock
+    // never got a query in, and went unenforced for the whole catch-up.
+    let inPass = 0;
+
+    while (inPass < budget) {
+      const ids = await store.findExpired(pass, Math.min(batchSize, budget - inPass));
       if (ids.length === 0) break;
 
-      deleted += await store.deleteExecutions(ids);
+      inPass += await store.deleteExecutions(ids);
 
       // A short batch means the cutoff has been reached; a full one means there
       // is probably more behind it.
       if (ids.length < batchSize) break;
     }
 
-    if (deleted >= budget) {
-      moreToDo = true;
-      break;
-    }
+    deleted += inPass;
+    if (inPass >= budget) moreToDo = true;
   }
 
   return { deleted, moreToDo };
@@ -235,9 +239,14 @@ const prismaStore: RetentionStore = {
     // NodeRun, BinaryObject and child executions go with the row by cascade.
     // A pin does not: `sourceExecutionId` is deliberately not a foreign key, so
     // retention deleting the run a pin came from cannot delete the pin somebody
-    // is working with. It does have to stop pointing at a run that is gone.
+    // is working with. It does have to stop pointing at a run that is gone —
+    // and a pin can have been captured from a sub-workflow run, which the
+    // cascade takes without the pin ever naming the root being deleted here.
+    // So the descendants are walked first.
+    const going = await withDescendants(ids);
+
     await prisma.pinnedData.updateMany({
-      where: { sourceExecutionId: { in: ids } },
+      where: { sourceExecutionId: { in: going } },
       data: { sourceExecutionId: null },
     });
 
@@ -246,34 +255,102 @@ const prismaStore: RetentionStore = {
   },
 };
 
+/**
+ * A set of executions plus every run started underneath them.
+ *
+ * Level by level rather than a recursive CTE, because the depth is already
+ * bounded: a workflow can only call another so many deep, and `MAX_DEPTH` here
+ * is that limit with room to spare. Only ids are read, and only for the batch
+ * about to be deleted.
+ */
+async function withDescendants(ids: string[]): Promise<string[]> {
+  const MAX_DEPTH = 16;
+
+  const all = [...ids];
+  let frontier = ids;
+
+  for (let depth = 0; depth < MAX_DEPTH && frontier.length > 0; depth++) {
+    const children = await prisma.execution.findMany({
+      where: { parentExecutionId: { in: frontier } },
+      select: { id: true },
+    });
+
+    frontier = children.map((child) => child.id);
+    all.push(...frontier);
+  }
+
+  return all;
+}
+
 // ---------------------------------------------------------------------------
 // What is there
 // ---------------------------------------------------------------------------
 
 export interface HistoryVolume {
+  /** Approximate: the planner's row estimate, not a count. */
   executions: number;
+  /** Approximate, same source. */
   nodeRuns: number;
-  /** Bytes of stored files, which is the part that actually grows a volume. */
-  binaryBytes: number;
+  /** Bytes the history tables occupy, indexes and stored files included. */
+  diskBytes: number;
   oldest: Date | null;
 }
+
+/** The tables history actually lives in. */
+const HISTORY_TABLES = ['Execution', 'NodeRun', 'BinaryObject'];
 
 /**
  * How much history exists, for the operator who would otherwise find out from a
  * disk usage graph.
+ *
+ * Estimates rather than counts. `SELECT COUNT(*)` in Postgres is a full scan,
+ * and this renders on a page that is `force-dynamic` — so on the instance this
+ * whole feature exists for, the one with millions of node runs, an exact number
+ * would cost seconds on every load to say something nobody reads to the digit.
+ * Size comes from `pg_total_relation_size`, which is free, and answers the
+ * question better than a row count does.
  */
 export async function historyVolume(): Promise<HistoryVolume> {
-  const [executions, nodeRuns, binaries, oldest] = await Promise.all([
-    prisma.execution.count(),
-    prisma.nodeRun.count(),
-    prisma.binaryObject.aggregate({ _sum: { size: true } }),
+  const [rows, size, oldest] = await Promise.all([
+    prisma.$queryRaw<Array<{ table: string; rows: number }>>`
+      SELECT relname AS table, reltuples AS rows
+      FROM pg_class
+      WHERE relname = ANY(${HISTORY_TABLES})
+    `,
+    prisma.$queryRaw<Array<{ bytes: bigint }>>`
+      SELECT COALESCE(SUM(pg_total_relation_size(oid)), 0) AS bytes
+      FROM pg_class
+      WHERE relname = ANY(${HISTORY_TABLES})
+    `,
     prisma.execution.findFirst({ orderBy: { queuedAt: 'asc' }, select: { queuedAt: true } }),
+  ]);
+
+  const [executions, nodeRuns] = await Promise.all([
+    estimate(rows, 'Execution', () => prisma.execution.count()),
+    estimate(rows, 'NodeRun', () => prisma.nodeRun.count()),
   ]);
 
   return {
     executions,
     nodeRuns,
-    binaryBytes: binaries._sum.size ?? 0,
+    diskBytes: Number(size[0]?.bytes ?? 0),
     oldest: oldest?.queuedAt ?? null,
   };
+}
+
+/**
+ * A table's row estimate, falling back to a count.
+ *
+ * Postgres reports -1 for a table it has never analysed: a new instance, or one
+ * autovacuum has not reached yet. Both are small enough that counting is cheap,
+ * and it is the one case where the exact number is worth asking for — reporting
+ * zero would say the history is empty when it is not.
+ */
+async function estimate(
+  rows: Array<{ table: string; rows: number }>,
+  table: string,
+  count: () => Promise<number>,
+): Promise<number> {
+  const value = Number(rows.find((row) => row.table === table)?.rows ?? -1);
+  return value < 0 ? count() : Math.round(value);
 }

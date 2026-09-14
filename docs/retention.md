@@ -75,6 +75,11 @@ pin was captured from cannot delete the pin somebody is working with. The job
 nulls that column for the rows it is about to delete, so a pin outlives its
 source run without pointing at something that is gone.
 
+That nulling walks the descendants first. A pin can have been captured from a
+sub-workflow run, and such a run is deleted by the cascade without ever naming
+the root the job selected — so nulling only the selected ids would leave exactly
+the dangling reference this is here to prevent.
+
 ## Bounded, every time
 
 Deletes happen in batches of 200, each its own statement, with a ceiling of
@@ -89,6 +94,11 @@ ticks instead, and a tick with nothing to do costs one indexed query.
 
 The loop stops a pass as soon as a batch comes back short, which is how it knows
 it has reached the cutoff without a counting query.
+
+**The ceiling is per clock, not shared.** Successes are worked first and are
+almost all of the volume, so one shared budget would mean that for as long as a
+backlog of them took to drain — days, on an old instance — the failure clock
+never got a query in and went unenforced. Each clock gets its own.
 
 ## Payload size
 
@@ -110,10 +120,28 @@ caught up says so in those terms.
 ## What the operator sees
 
 The Insights page shows the policy next to how much history exists: executions
-stored, node runs stored, bytes of stored files, and how far back the oldest run
-goes. It is the page somebody is already on when they wonder where last month's
-runs went, and the alternative to showing it there is finding out from a disk
-usage graph.
+stored, node runs stored, what the history tables occupy on disk, and the date
+of the oldest run. It is the page somebody is already on when they wonder where
+last month's runs went, and the alternative to showing it there is finding out
+from a disk usage graph.
+
+The two row counts are the planner's estimates rather than counts. `COUNT(*)` in
+Postgres is a full scan, and this renders on a page that is `force-dynamic` — so
+on the instance this whole feature exists for, the one with millions of node
+runs, an exact number would cost seconds on every load to say something nobody
+reads to the digit. A table Postgres has never analysed reports no estimate at
+all, and only then is it counted: that instance is new, and counting it is
+free. The size comes from `pg_total_relation_size`, which is free at any
+volume.
+
+## A gap worth naming
+
+A run stranded in `running` by a worker that crashed mid-execution is on neither
+clock, and nothing else reclaims it, so its payloads are kept forever. The
+volume is negligible — it takes a crash to make one — and the fix is not
+retention's: it is something noticing that a run has been claimed for longer
+than a run can take and marking it failed, which belongs with worker liveness
+(#15). Retention will then age it out on the failure clock with everything else.
 
 ## Not here yet
 
