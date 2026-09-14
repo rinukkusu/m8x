@@ -1,6 +1,13 @@
 import type { NodeDefinition, NodeExecute } from '../types.js';
 import * as descriptors from './descriptors/index.js';
 import { executeCode } from './impl/code.js';
+import {
+  executeDatatableDelete,
+  executeDatatableGet,
+  executeDatatableInsert,
+  executeDatatableUpdate,
+  executeDatatableUpsert,
+} from './impl/datatable.js';
 import { executeParseCsv, executeToCsv } from './impl/csv.js';
 import { sendEmail } from './impl/email.js';
 import {
@@ -50,6 +57,12 @@ const EXECUTORS: Record<string, NodeExecute> = {
   'trigger.schedule': executePassThrough,
   'trigger.telegram': executePassThrough,
   'trigger.email': executePassThrough,
+  'trigger.datatable': executePassThrough,
+  'action.datatable.insert': executeDatatableInsert,
+  'action.datatable.get': executeDatatableGet,
+  'action.datatable.update': executeDatatableUpdate,
+  'action.datatable.upsert': executeDatatableUpsert,
+  'action.datatable.delete': executeDatatableDelete,
   'action.email.send': sendEmail,
   'action.httpRequest': executeHttpRequest,
   'action.code': executeCode,

@@ -1,13 +1,21 @@
 'use client';
 
-import type { ParamSchema } from '@m8x/core';
+import type { DatatableColumn, ParamSchema } from '@m8x/core';
 import type { CredentialType } from '@m8x/core/server';
 import { Plus, X } from 'lucide-react';
 
 import { Button, Field, Input, Select, Textarea } from '../ui';
 import { CredentialPicker, type CredentialOption } from './credential-picker';
+import { DatatableFilterEditor } from './datatable-filter';
 
 export type { CredentialOption };
+
+/** A datatable the editor can offer, with what its columns are called. */
+export interface DatatableOption {
+  id: string;
+  name: string;
+  columns: DatatableColumn[];
+}
 
 /**
  * Renders one parameter from its schema.
@@ -22,12 +30,18 @@ export function ParamField({
   onChange,
   credentials,
   credentialTypes,
+  datatables = [],
+  siblings = {},
 }: {
   schema: ParamSchema;
   value: unknown;
   onChange: (value: unknown) => void;
   credentials: CredentialOption[];
   credentialTypes: CredentialType[];
+  /** Every datatable, for the parameters that pick one or name its columns. */
+  datatables?: DatatableOption[];
+  /** The node's other parameter values, for the ones that depend on a sibling. */
+  siblings?: Record<string, unknown>;
 }) {
   if (schema.credentialType) {
     return (
@@ -38,6 +52,87 @@ export function ParamField({
         value={String(value ?? '')}
         credentials={credentials}
         credentialTypes={credentialTypes}
+        onChange={onChange}
+      />
+    );
+  }
+
+  // The datatable parameters are filled in here rather than by the descriptor,
+  // for the same reason the credential picker is: a descriptor cannot know what
+  // exists at edit time.
+  if (schema.datatableSource) {
+    return (
+      <Field label={schema.displayName} hint={schema.description}>
+        <Select value={String(value ?? '')} onChange={(event) => onChange(event.target.value)}>
+          <option value="">Choose a datatable…</option>
+          {datatables.map((table) => (
+            <option key={table.id} value={table.id}>
+              {table.name}
+            </option>
+          ))}
+        </Select>
+      </Field>
+    );
+  }
+
+  if (schema.datatableColumnsFrom) {
+    const columns = columnsOf(datatables, siblings[schema.datatableColumnsFrom]);
+    if (schema.multiple) {
+      return <ColumnChecklist schema={schema} columns={columns} value={value} onChange={onChange} />;
+    }
+
+    const chosen = String(value ?? '');
+    // No table picked yet, or a table with no columns: a dropdown of nothing is
+    // a dead end, so fall back to typing the key, the way the filter rows do.
+    if (columns.length === 0) {
+      return (
+        <Field label={schema.displayName} hint={schema.description}>
+          <Input value={chosen} placeholder="column" onChange={(event) => onChange(event.target.value)} />
+        </Field>
+      );
+    }
+
+    return (
+      <Field label={schema.displayName} hint={schema.description}>
+        <Select value={chosen} onChange={(event) => onChange(event.target.value)}>
+          <option value="">None</option>
+          {columns.map((column) => (
+            <option key={column.key} value={column.key}>
+              {column.name}
+            </option>
+          ))}
+          {/* A column that has since been removed stays selected rather than
+              silently becoming None and changing what the node does. */}
+          {chosen && !columns.some((column) => column.key === chosen) ? (
+            <option value={chosen}>{chosen} (gone)</option>
+          ) : null}
+        </Select>
+      </Field>
+    );
+  }
+
+  if (schema.datatableFilterFrom) {
+    return (
+      <DatatableFilterEditor
+        label={schema.displayName}
+        hint={schema.description}
+        rows={Array.isArray(value) ? (value as Array<Record<string, unknown>>) : []}
+        columns={columnsOf(datatables, siblings[schema.datatableFilterFrom])}
+        onChange={onChange}
+      />
+    );
+  }
+
+  if (schema.type === 'select' && schema.multiple) {
+    return (
+      <ColumnChecklist
+        schema={schema}
+        columns={(schema.options ?? []).map((option) => ({
+          key: option.value,
+          name: option.label,
+          type: 'string' as const,
+        }))}
+        value={value}
         onChange={onChange}
       />
     );
@@ -142,6 +237,62 @@ export function ParamField({
         </Field>
       );
   }
+}
+
+function columnsOf(datatables: DatatableOption[], datatableId: unknown): DatatableColumn[] {
+  return datatables.find((table) => table.id === datatableId)?.columns ?? [];
+}
+
+/**
+ * A multi-select as checkboxes.
+ *
+ * A native multiple <select> needs ctrl-click to add a second value, which
+ * nobody discovers, and it scrolls at exactly the sizes this is used at.
+ */
+function ColumnChecklist({
+  schema,
+  columns,
+  value,
+  onChange,
+}: {
+  schema: ParamSchema;
+  columns: DatatableColumn[];
+  value: unknown;
+  onChange: (value: unknown) => void;
+}) {
+  const selected = Array.isArray(value) ? value.map(String) : value ? [String(value)] : [];
+
+  function toggle(key: string) {
+    onChange(selected.includes(key) ? selected.filter((entry) => entry !== key) : [...selected, key]);
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <span className="block text-xs font-medium text-ink-muted">{schema.displayName}</span>
+
+      {columns.length === 0 ? (
+        <span className="block text-xs text-ink-faint">Nothing to choose from yet.</span>
+      ) : (
+        <div className="space-y-1 rounded-md border border-line bg-surface-2 p-2">
+          {columns.map((column) => (
+            <label key={column.key} className="flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={selected.includes(column.key)}
+                onChange={() => toggle(column.key)}
+                className="size-3.5 accent-[var(--color-accent)]"
+              />
+              <span className="truncate text-xs text-ink">{column.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+
+      {schema.description ? (
+        <span className="block text-xs leading-relaxed text-ink-faint">{schema.description}</span>
+      ) : null}
+    </div>
+  );
 }
 
 function KeyValueList({

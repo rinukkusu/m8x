@@ -24,7 +24,7 @@ const MAX_ITEMS_STORED = 50;
 
 export interface CreateExecutionInput {
   workflowId: string;
-  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'email' | 'retry' | 'subworkflow';
+  trigger: 'manual' | 'webhook' | 'schedule' | 'telegram' | 'email' | 'datatable' | 'retry' | 'subworkflow';
   /** Items handed to the trigger node. */
   input?: Item[];
   /**

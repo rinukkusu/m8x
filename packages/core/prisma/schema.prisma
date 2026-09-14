@@ -104,6 +104,7 @@ enum TriggerKind {
   schedule
   telegram
   email
+  datatable
 }
 
 model Trigger {
@@ -206,6 +207,7 @@ enum TriggerSource {
   schedule
   telegram
   email
+  datatable
   retry
   subworkflow
 }
@@ -347,4 +349,53 @@ model Credential {
   updatedAt DateTime @updatedAt
 
   @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Datatables
+//
+// Somewhere for a workflow to keep state between runs. One row per record with
+// the record in a `Json` column, rather than one row per field: an eight-column
+// table would otherwise be eight rows to read back and a self-join to filter on
+// two fields, and every value would be text, so `total > 100` could not use an
+// index. The flexibility that shape is reached for is already here, because
+// `columns` is metadata and the rows are schemaless underneath it.
+//
+// See docs/datatables.md.
+// ---------------------------------------------------------------------------
+
+model Datatable {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  description String?
+
+  // DatatableColumn[]: { key, name, type, required?, unique?, default? }.
+  // Metadata only, so adding or removing a column rewrites no rows: a row that
+  // predates a column simply lacks the key, and reads fill in its default.
+  columns Json @default("[]")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rows DatatableRow[]
+}
+
+model DatatableRow {
+  id          String    @id @default(cuid())
+  datatableId String
+  datatable   Datatable @relation(fields: [datatableId], references: [id], onDelete: Cascade)
+
+  // Exactly an Item.json, so what a node wrote is what a node reads, with no
+  // mapping layer in between. Capped at 64 kB of serialised JSON on write.
+  data Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([datatableId, createdAt(sort: Desc)])
+  // Containment and key lookups on arbitrary columns, which is what every
+  // filter compiles to. jsonb_path_ops rather than the default: the filters
+  // here only ever ask about a key's value, never whether a key exists, and the
+  // smaller index is the one that stays fast as a table grows.
+  @@index([data(ops: JsonbPathOps)], type: Gin)
 }
