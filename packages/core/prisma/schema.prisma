@@ -442,3 +442,34 @@ model DatatableRow {
   // smaller index is the one that stays fast as a table grows.
   @@index([data(ops: JsonbPathOps)], type: Gin)
 }
+
+// ---------------------------------------------------------------------------
+// Retention
+//
+// One row, id "global". Every node run stores the items that went in and came
+// out, which is what makes the execution detail view worth opening and also
+// what fills a disk: a webhook workflow firing a few times a minute writes
+// history continuously and nothing used to delete any of it.
+//
+// Successes and failures are aged out separately because they are worth
+// different amounts. A successful run is interesting for a few days; a failed
+// one is what you go back to weeks later, and failures are a small fraction of
+// the volume, so keeping them far longer costs almost nothing.
+//
+// A per-workflow policy is the obvious next step, and the shape here does not
+// stand in its way: this table gains a nullable workflowId and the lookup asks
+// for the workflow's row before the global one. Nothing is added now for a
+// requirement that does not exist yet.
+// ---------------------------------------------------------------------------
+
+model RetentionPolicy {
+  id String @id @default("global")
+
+  // Days of history to keep, counted from when a run was queued. Null means
+  // keep forever, which is a decision an operator can make but not the default:
+  // the default has to be safe for someone who never opens this setting.
+  successDays Int? @default(7)
+  failureDays Int? @default(30)
+
+  updatedAt DateTime @updatedAt
+}

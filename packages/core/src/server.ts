@@ -14,6 +14,7 @@ export * from './server/telegram-poller.js';
 export * from './server/email-messages.js';
 export * from './server/email-poller.js';
 export * from './server/binary.js';
+export * from './server/retention.js';
 export * from './server/worker.js';
 export * from './server/credentials.js';
 export * from './server/datatables.js';

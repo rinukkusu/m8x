@@ -30,6 +30,12 @@ into failures are all part of the thing, not part of a paid tier.
   distinct problems they actually are.
 - **Retry from the failed node.** Upstream side effects already happened, so a
   partial retry resumes with the stored input rather than running them again.
+- **History that cleans up after itself.** Every node run stores what it saw,
+  which is what makes the detail view worth opening and also what fills a disk.
+  Successful runs and failed ones age out on separate clocks — a week and a
+  month out of the box — and the worker deletes what is past them in bounded
+  batches. Insights shows the policy next to how much history there actually is
+  — see [docs/retention.md](docs/retention.md).
 - **Pinned data, and results where you are building.** Running from the editor
   stays in the editor: outcomes are painted onto the canvas and the node you
   click shows the items that went in and came out. Freeze a node's output and
