@@ -318,10 +318,20 @@ export interface RetryOptions {
  * subtly wrong result rather than an obvious failure.
  */
 export async function retryExecution(executionId: string, options: RetryOptions = {}): Promise<string> {
-  const original = await prisma.execution.findUniqueOrThrow({
+  const original = await prisma.execution.findUnique({
     where: { id: executionId },
     include: { nodeRuns: { orderBy: { sequence: 'asc' } }, workflowVersion: true },
   });
+
+  if (!original) {
+    // Reachable from a tab left open while retention caught up with the run it
+    // is showing. A retry needs the original's stored input, so there is
+    // nothing to do but say why — which beats a Prisma error about a record
+    // that was required and not found.
+    throw new Error(
+      'That run is no longer in history. It has passed the retention policy and been deleted, so it cannot be retried.',
+    );
+  }
 
   // Whichever trigger the original run used, this one uses too. Without it a
   // workflow with more than one trigger would retry down the wrong branch.

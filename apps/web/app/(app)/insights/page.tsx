@@ -1,7 +1,8 @@
-import { prisma } from '@m8x/core/server';
+import { getRetentionPolicy, historyVolume, prisma } from '@m8x/core/server';
 import Link from 'next/link';
 
 import { InsightsCharts, type DailyPoint } from '@/components/insights-charts';
+import { RetentionSettings } from '@/components/retention-settings';
 import { EmptyState, PageHeader, formatDuration, formatRelative } from '@/components/ui';
 import { requireUser } from '@/lib/auth';
 
@@ -14,7 +15,7 @@ export default async function InsightsPage() {
 
   const since = new Date(Date.now() - WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
-  const [daily, durations, failureGroups, slowNodes, totals] = await Promise.all([
+  const [daily, durations, failureGroups, slowNodes, totals, policy, volume] = await Promise.all([
     dailyCounts(since),
     durationPercentiles(since),
     failureGroupsSince(since),
@@ -24,6 +25,8 @@ export default async function InsightsPage() {
       where: { queuedAt: { gte: since } },
       _count: { _all: true },
     }),
+    getRetentionPolicy(),
+    historyVolume(),
   ]);
 
   const totalRuns = totals.reduce((sum, row) => sum + row._count._all, 0);
@@ -130,6 +133,19 @@ export default async function InsightsPage() {
             </section>
           </>
         )}
+
+        {/* Outside the empty case on purpose: an instance with nothing in the
+            last fortnight can still be holding a year of history, and that is
+            exactly the instance whose operator needs to see this. */}
+        <RetentionSettings
+          policy={policy}
+          volume={{
+            executions: volume.executions,
+            nodeRuns: volume.nodeRuns,
+            binaryBytes: volume.binaryBytes,
+            oldest: volume.oldest?.toISOString() ?? null,
+          }}
+        />
       </div>
     </>
   );

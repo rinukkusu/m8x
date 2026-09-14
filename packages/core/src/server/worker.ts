@@ -22,6 +22,7 @@ import {
   restoredOutputsFor,
 } from './executions.js';
 import { pinnedOutputsFor } from './pins.js';
+import { pruneExecutions } from './retention.js';
 import {
   QUEUE_EXECUTE,
   QUEUE_SCHEDULER_TICK,
@@ -320,6 +321,18 @@ export async function tickScheduler(log: (message: string) => void = console.inf
   // whether any workflow does. The query is indexed and matches nothing on a
   // normal tick.
   await pruneOrphanBinaries().catch((error: unknown) => console.error('[worker] binary prune failed', error));
+
+  // Retention rides the same tick, for the same reason and in bounded batches,
+  // so history that is past the policy goes whether or not anything is running.
+  // Nothing is logged on a quiet tick: the query is indexed and matches nothing
+  // once an instance has caught up.
+  await pruneExecutions()
+    .then((result) => {
+      if (result.deleted > 0) {
+        log(`[retention] deleted ${result.deleted} executions${result.moreToDo ? ', more next tick' : ''}`);
+      }
+    })
+    .catch((error: unknown) => console.error('[worker] retention prune failed', error));
 
   const due = await claimDueSchedules();
   if (due.length === 0) return;
