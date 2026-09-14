@@ -8,6 +8,7 @@ import {
   type SubWorkflowResult,
 } from '../runner/index.js';
 import { getBinary, pruneOrphanBinaries, putBinary } from './binary.js';
+import { startDatatableTriggers } from './datatable-triggers.js';
 import { loadCredentialData } from './credentials.js';
 import { prisma } from './db.js';
 import { readExecutionInput } from './execution-input.js';
@@ -60,6 +61,10 @@ export async function startWorker(options: StartWorkerOptions = {}): Promise<voi
 
   const concurrency = options.concurrency ?? Number(process.env.M8X_WORKER_CONCURRENCY ?? 5);
   const log = options.log ?? ((message: string) => console.info(message));
+
+  // A datatable write turns into executions in whichever process made it, so
+  // the dispatcher is registered before any node can write a row.
+  startDatatableTriggers();
 
   const boss = await getBoss();
 

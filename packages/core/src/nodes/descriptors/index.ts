@@ -18,6 +18,14 @@ import {
   waitNode,
 } from './flow.js';
 import { code, executeWorkflowNode, httpRequest, setNode } from './actions.js';
+import {
+  datatableDelete,
+  datatableGet,
+  datatableInsert,
+  datatableTrigger,
+  datatableUpdate,
+  datatableUpsert,
+} from './datatable.js';
 import { extractHtmlNode, parseCsvNode, toCsvNode, xmlToJsonNode } from './data.js';
 import {
   telegramAnswerCallbackQuery,
@@ -49,6 +57,7 @@ import { manualTrigger, scheduleTrigger, webhookTrigger } from './triggers.js';
 export * from './shared.js';
 export * from './actions.js';
 export * from './data.js';
+export * from './datatable.js';
 export * from './email.js';
 export * from './flow.js';
 export * from './telegram.js';
@@ -61,6 +70,7 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   scheduleTrigger,
   telegramTrigger,
   emailTrigger,
+  datatableTrigger,
   httpRequest,
   code,
   setNode,
@@ -70,6 +80,11 @@ export const NODE_DESCRIPTORS: NodeDescriptor[] = [
   toCsvNode,
   extractHtmlNode,
   xmlToJsonNode,
+  datatableInsert,
+  datatableGet,
+  datatableUpdate,
+  datatableUpsert,
+  datatableDelete,
   telegramSendMessage,
   telegramSendPhoto,
   telegramSendDocument,

@@ -708,6 +708,7 @@ function buildContext(args: RunNodeArgs): NodeExecuteContext {
     items: input,
     node: { id: node.id, name: node.name, type: node.type },
     executionId: ctx.executionId,
+    workflowId: ctx.workflowId,
     signal: ctx.signal,
 
     getParam<T>(name: string, itemIndex = 0): T {

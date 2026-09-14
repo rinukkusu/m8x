@@ -67,6 +67,11 @@ export interface ParamSchema {
   /** For type 'select'. */
   options?: ParamOption[];
   /**
+   * For type 'select': more than one option may be picked, and the value is a
+   * string[] rather than a string.
+   */
+  multiple?: boolean;
+  /**
    * Show this parameter only when the named sibling parameters hold one of the
    * listed values, e.g. `{ method: ['POST', 'PUT'] }`.
    */
@@ -78,6 +83,24 @@ export interface ParamSchema {
   expression?: boolean;
   /** Name of a credential type this parameter selects. */
   credentialType?: string;
+  /**
+   * For type 'select': the options are the datatables. The inspector fills them
+   * in, the way it does for `credentialType` — a descriptor cannot know what
+   * exists at edit time.
+   */
+  datatableSource?: boolean;
+  /**
+   * For type 'select': the options are the columns of the datatable chosen in
+   * the named sibling parameter. Falls back to free text, so an expression
+   * still works where a dropdown cannot.
+   */
+  datatableColumnsFrom?: string;
+  /**
+   * For type 'json': render the filter builder against the datatable chosen in
+   * the named sibling parameter. Degrading to the raw JSON editor when the
+   * builder is not there is deliberate — the value is readable either way.
+   */
+  datatableFilterFrom?: string;
   /** Column placeholders for type 'keyValue'. Default to "name" and "value". */
   keyPlaceholder?: string;
   valuePlaceholder?: string;
@@ -139,6 +162,9 @@ export interface NodeExecuteContext {
 
   readonly node: { id: string; name: string; type: string };
   readonly executionId: string;
+  /** The workflow being run. A datatable write carries it, so a trigger on that
+   * table can tell its own workflow's writes from everyone else's. */
+  readonly workflowId: string;
   readonly logger: NodeLogger;
   /** Aborted when the execution is cancelled or times out. */
   readonly signal: AbortSignal;

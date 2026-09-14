@@ -16,5 +16,6 @@ export * from './server/worker.js';
 export * from './server/credentials.js';
 export * from './server/datatables.js';
 export * from './server/datatable-changes.js';
+export * from './server/datatable-triggers.js';
 export * from './runner/index.js';
 export { getNodeDefinition, requireNodeDefinition } from './nodes/executors.js';
