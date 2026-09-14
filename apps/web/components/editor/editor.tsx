@@ -2,6 +2,7 @@
 
 import {
   NODE_DESCRIPTORS,
+  autoLayout,
   defaultParams,
   getNodeDescriptor,
   pinRefusal,
@@ -27,7 +28,7 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react';
-import { AlertTriangle, ArrowLeft, Copy, ExternalLink, Pin, Play, Plus, Save } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Copy, ExternalLink, Pin, Play, Plus, Save, Wand2 } from 'lucide-react';
 import * as icons from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -99,7 +100,7 @@ function EditorInner({
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
   const router = useRouter();
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>(toCanvasNodes(workflow.graph));
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>(toCanvasEdges(workflow.graph));
@@ -269,6 +270,22 @@ function EditorInner({
     setPaletteOpen(false);
   }
 
+  /**
+   * Lay the canvas out along its edges.
+   *
+   * Left as an unsaved change like any other drag, so Save is still the step
+   * that commits it and a reload undoes a tidy nobody wanted.
+   */
+  function tidy() {
+    const placed = autoLayout(toGraph(nodes, edges));
+    setNodes((current) =>
+      current.map((node) => ({ ...node, position: placed.get(node.id) ?? node.position })),
+    );
+    // React Flow measures on the next frame; fitting before that would frame
+    // the positions the nodes are leaving.
+    requestAnimationFrame(() => fitView({ padding: 0.2, duration: 300 }));
+  }
+
   function duplicateNode(source: GraphNode) {
     const id = newId();
     const position = { x: source.position.x + 60, y: source.position.y + 60 };
@@ -433,6 +450,11 @@ function EditorInner({
         <Button size="sm" onClick={() => setPaletteOpen(true)} disabled={pending}>
           <Plus className="size-3.5" />
           Add node
+        </Button>
+
+        <Button size="sm" onClick={tidy} disabled={pending || nodes.length === 0}>
+          <Wand2 className="size-3.5" />
+          Tidy up
         </Button>
 
         <Button size="sm" onClick={() => save()} disabled={pending || !dirty}>

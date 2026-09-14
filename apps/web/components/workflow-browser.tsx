@@ -379,19 +379,17 @@ function FolderRow({
       {count > 0 ? <span className="shrink-0 text-[11px] text-ink-faint">{count}</span> : null}
 
       {onRename ? (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            const choice = window.prompt('Type "rename" or "delete"', 'rename');
-            if (choice === 'rename') onRename();
-            else if (choice === 'delete') onDelete?.();
-          }}
-          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-          aria-label={`Options for ${label}`}
-        >
-          <MoreHorizontal className="size-3.5" />
-        </button>
+        // The menu lives inside a clickable row, so its clicks must not also
+        // select the folder behind it.
+        <span onClick={(event) => event.stopPropagation()} className="contents">
+          <RowMenu
+            label={`Options for ${label}`}
+            items={[
+              { label: 'Rename', icon: Pencil, onSelect: onRename },
+              ...(onDelete ? [{ label: 'Delete', icon: Trash2, danger: true, onSelect: onDelete }] : []),
+            ]}
+          />
+        </span>
       ) : null}
     </div>
   );
