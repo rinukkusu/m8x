@@ -35,8 +35,7 @@ model DatatableRow {
   updatedAt   DateTime  @updatedAt
 
   @@index([datatableId, createdAt(sort: Desc)])
-  // Plus a GIN index on `data`, added in a raw migration because Prisma has no
-  // syntax for one.
+  @@index([data(ops: JsonbPathOps)], type: Gin)
 }
 ```
 
@@ -95,6 +94,11 @@ goes through it: the nodes, the grid, any import.
 - **Rows per table are unbounded**, with a warning in the UI past about 100k
   rows. A hard ceiling would turn one legitimate large table into a support
   question; the row cap and the read cap are what actually protect the process.
+- **One node call changes at most 1000 rows**, the same ceiling as a read, and
+  for the same reason: a change set becomes one execution carrying one item per
+  row, so an unbounded update would build an execution input nobody can open.
+  Over that, the node fails and names the count. Truncating the change set
+  instead would start a workflow that quietly missed half its work.
 
 ## Writing
 
