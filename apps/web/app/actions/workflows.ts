@@ -1,6 +1,6 @@
 'use server';
 
-import { EMPTY_GRAPH, type Graph, type Item } from '@m8x/core';
+import { EMPTY_GRAPH, resumeRefusal, type Graph, type Item } from '@m8x/core';
 import {
   createExecution,
   createFolder,
@@ -8,6 +8,7 @@ import {
   moveFolder,
   prisma,
   listPins,
+  pinnedOutputsFor,
   prunePinsForGraph,
   removePin,
   retryExecution,
@@ -276,6 +277,25 @@ export async function runWorkflowAction(
     await ensureCurrentVersion(workflowId, graph, saved.currentVersionId);
     await syncTriggers(workflowId, graph, saved.active);
     await prunePinsForGraph(workflowId, graph);
+  }
+
+  // Where a run may start is asked again here, not only by the editor before it
+  // offers the button. The answer can change between render and click — another
+  // tab unpins, the save above moves the node into a loop — and a run started on
+  // a stale answer is exactly the silent empty run the refusal exists to stop.
+  if (options.resumeFromNodeId !== undefined) {
+    const workflow = await prisma.workflow.findUnique({
+      where: { id: workflowId },
+      select: { graph: true },
+    });
+    if (!workflow) return { ok: false, error: 'That workflow no longer exists.' };
+
+    const current = workflow.graph as unknown as Graph;
+    // The pins the runner will actually see, which is a smaller set than the
+    // rows: one on a deleted node or inside a loop never reaches it.
+    const pinnedIds = new Set(Object.keys(await pinnedOutputsFor(workflowId, current)));
+    const refusal = resumeRefusal(current, options.resumeFromNodeId, pinnedIds);
+    if (refusal) return { ok: false, error: refusal };
   }
 
   try {

@@ -109,8 +109,9 @@ test('a run may start at a node whose input is pinned', () => {
 test('a run may not start at a node fed by something unpinned', () => {
   const refusal = resumeRefusal(chain(), 'b', pinned('trigger'));
   assert.ok(refusal);
-  // Named, so the fix is the next click rather than a hunt.
-  assert.match(refusal, /\ba\b/);
+  // Anchored, because the message goes on to say "a run from here" — a loose
+  // match for the name would pass on that and never check the naming at all.
+  assert.match(refusal, /^Pin a first\b/);
 });
 
 test('a node with nothing above it is refused, because that is just Run', () => {
@@ -141,6 +142,10 @@ test('every feeding node is checked, not only the first', () => {
     ],
   };
 
-  assert.ok(resumeRefusal(graph, 'merge', pinned('left')));
+  assert.match(resumeRefusal(graph, 'merge', pinned('left'))!, /^Pin right first\b/);
   assert.equal(resumeRefusal(graph, 'merge', pinned('left', 'right')), null);
+});
+
+test('a node that is no longer on the canvas cannot start a run either', () => {
+  assert.ok(resumeRefusal(chain(), 'deleted', pinned('a')));
 });

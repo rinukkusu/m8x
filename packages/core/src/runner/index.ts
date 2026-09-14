@@ -11,7 +11,7 @@ import {
   validateGraph,
   withoutBackEdges,
 } from '../graph.js';
-import { requireNodeDefinition } from '../nodes/executors.js';
+import { getNodeDefinition, requireNodeDefinition } from '../nodes/executors.js';
 import { isParamVisible, paramUsesExpressions, resolveOutputs, validateParams } from '../nodes/index.js';
 import {
   NodeError,
@@ -481,6 +481,33 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
     return { kind: 'failed', failure: toFailure(loop, error) };
   }
 
+  /**
+   * Settle a node the resume point has stepped over.
+   *
+   * A pin above the start point is the whole reason the run was started there,
+   * so its items are laid down as that node's output and everything downstream
+   * gathers from them. Without a pin the node is skipped, and a node fed only
+   * by skipped nodes is skipped in turn — which is what a retry wants, and what
+   * `resumeRefusal` refuses to let the editor ask for.
+   *
+   * Neither case executes the node. The difference is only whether it has an
+   * output to hand on.
+   */
+  function laySkippedPrefix(node: GraphNode): void {
+    const frozen = ctx.pinnedOutputs?.[node.id];
+    const definition = frozen ? getNodeDefinition(node.type) : undefined;
+
+    // No definition means a node type this build does not have. It is not going
+    // to run either way, so it is skipped rather than failing a run that was
+    // never going to reach it.
+    if (frozen && definition) {
+      outputs[node.id] = normaliseOutput(frozen, resolveOutputs(definition, node.params));
+      return;
+    }
+
+    skipped.add(node.id);
+  }
+
   for (const node of order) {
     if (ctx.signal.aborted) {
       return { status: 'cancelled', outputs, durationMs: Date.now() - startedAt };
@@ -492,7 +519,7 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       // the wrong thing.
       if (node.id === ctx.resumeFromNodeId) startReached = true;
       else {
-        if (!(node.id in outputs)) skipped.add(node.id);
+        if (!(node.id in outputs)) laySkippedPrefix(node);
         continue;
       }
     }

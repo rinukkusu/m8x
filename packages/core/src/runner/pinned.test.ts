@@ -174,3 +174,46 @@ test('a pin on a loop node is ignored, because it would freeze every pass', asyn
   assert.equal(result.status, 'success');
   assert.equal(starts(events, 'body').length, 2);
 });
+
+// ---------------------------------------------------------------------------
+// Starting a run partway down
+// ---------------------------------------------------------------------------
+
+test('a run started partway down takes its input from the pin above it', async () => {
+  const { result, events } = await run(chain(), [{ json: {} }], {
+    resumeFromNodeId: 'after',
+    pinnedOutputs: { middle: pin([{ json: { ran: 'frozen' } }]) },
+  });
+
+  // The point of the whole feature: nothing above "after" executed, and "after"
+  // still got real items to work on rather than being skipped for want of input.
+  assert.equal(result.status, 'success');
+  assert.equal(starts(events, 'trigger').length, 0);
+  assert.equal(starts(events, 'middle').length, 0);
+  assert.deepEqual(result.outputs.after?.[0]?.[0]?.json, { ran: 'frozen', saw: 'frozen' });
+});
+
+test('a node the resume point stepped over without a pin is still skipped', async () => {
+  const { result, events } = await run(chain(), [{ json: {} }], {
+    resumeFromNodeId: 'after',
+  });
+
+  // No pin to stand in for "middle", so "after" has nothing feeding it. A
+  // retry reaches this case by restoring outputs instead; the editor is kept
+  // out of it by resumeRefusal.
+  assert.equal(result.status, 'success');
+  assert.equal(starts(events, 'after').length, 0);
+  assert.equal(finish(events, 'after')?.status, 'skipped');
+});
+
+test('a restored output still wins over a pin on the same node', async () => {
+  const { result } = await run(chain(), [{ json: {} }], {
+    resumeFromNodeId: 'after',
+    restoredOutputs: { middle: pin([{ json: { ran: 'restored' } }]) },
+    pinnedOutputs: { middle: pin([{ json: { ran: 'frozen' } }]) },
+  });
+
+  // A retry replays what that execution really produced. Re-running it with
+  // pins on would otherwise rewrite history under the retry's feet.
+  assert.equal(result.outputs.after?.[0]?.[0]?.json.saw, 'restored');
+});

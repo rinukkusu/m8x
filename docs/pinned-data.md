@@ -92,7 +92,8 @@ runner could not tell "this was restored from an earlier run" from "the author
 froze this", and those two want different things on screen.
 
 The pin is applied late in `step`, after everything that decides whether the
-node is reached at all and before anything that decides what it does. A trigger
+node is reached at all and before anything that decides what it does. The one
+exception is a pin above a run's start point, covered under Run from here. A trigger
 gets its payload this way — pinning a webhook trigger's output is the whole point
 of the feature — but only when it is the trigger the run actually started from.
 
@@ -172,11 +173,24 @@ retry-from-failed-node — pointed at the editor instead of at history. Everythi
 before the named node is skipped, and its input is gathered from pinned outputs
 upstream.
 
+A pin above the start point is laid into the run's outputs as the prefix is
+stepped over, rather than applied in `step` like every other pin. The prefix
+never calls `step` at all, so a pin that only took effect there would leave the
+start node with nothing feeding it — the empty run this whole rule exists to
+prevent. The node still does not execute; it just has an output to hand on. A
+restored output wins over a pin on the same node, because a retry replays what
+that execution really produced rather than what the canvas has frozen since.
+
 It is offered only when every node feeding the selected one is pinned. Without
 that the node gathers input from nodes that were skipped and never produced
 anything, and the run does nothing while appearing to work. The editor greys the
 action and says which upstream node needs a pin, rather than letting you discover
-it from an empty result.
+it from an empty result. The server asks the same question again when the run is
+queued, since a pin can be dropped in another tab between render and click.
+
+The rule itself is `resumeRefusal` in `pins.ts`, beside `pinRefusal` and sharing
+its loop analysis — graph logic, so it sits where it can be tested rather than in
+the component that happens to ask.
 
 Inside a loop region it is refused, for the same reason retry-from-node is: the
 outer order steps over a region as one unit and there is nowhere to express

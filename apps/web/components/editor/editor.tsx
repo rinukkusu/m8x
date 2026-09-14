@@ -348,7 +348,6 @@ function EditorInner({
     });
   }
 
-
   function toggleActive() {
     startTransition(async () => {
       const result = await setActiveAction(workflow.id, !workflow.active);
