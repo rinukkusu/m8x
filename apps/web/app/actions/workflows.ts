@@ -1,13 +1,18 @@
 'use server';
 
-import { EMPTY_GRAPH, type Graph } from '@m8x/core';
+import { EMPTY_GRAPH, resumeRefusal, type Graph, type Item } from '@m8x/core';
 import {
   createExecution,
   createFolder,
   ensureCurrentVersion,
   moveFolder,
   prisma,
+  listPins,
+  pinnedOutputsFor,
+  prunePinsForGraph,
+  removePin,
   retryExecution,
+  setPin,
   subtreeFolderIds,
   syncTriggers,
 } from '@m8x/core/server';
@@ -173,6 +178,9 @@ export async function saveGraphAction(workflowId: string, graph: Graph): Promise
   });
 
   const sync = await syncTriggers(workflowId, graph, workflow.active);
+  // A pin belongs to the node it was taken from. Leaving one behind would
+  // resurrect it if a node ever reappeared under the same id.
+  await prunePinsForGraph(workflowId, graph);
 
   revalidatePath(`/workflows/${workflowId}`);
   revalidatePath('/workflows');
@@ -214,6 +222,24 @@ export async function setActiveAction(workflowId: string, active: boolean): Prom
     return { ok: false, error: `The webhook path ${sync.conflicts[0]!.path} is already taken by another workflow.` };
   }
 
+  // Activating with pins left on is not an error — a live run ignores them —
+  // but it is the moment somebody finds out their tested workflow and their
+  // real one are not the same thing, so say which nodes are affected.
+  if (active) {
+    const pinned = await listPins(workflowId);
+    const live = new Set(graph.nodes.map((node) => node.id));
+    const names = pinned
+      .filter((pin) => live.has(pin.nodeId))
+      .map((pin) => graph.nodes.find((node) => node.id === pin.nodeId)?.name ?? pin.nodeId);
+
+    if (names.length > 0) {
+      return {
+        ok: true,
+        error: `Active. ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still pinned — this workflow will run ${names.length === 1 ? 'it' : 'them'} for real, not replay the pinned items.`,
+      };
+    }
+  }
+
   return { ok: true };
 }
 
@@ -221,7 +247,22 @@ export async function setActiveAction(workflowId: string, active: boolean): Prom
 // Running
 // ---------------------------------------------------------------------------
 
-export async function runWorkflowAction(workflowId: string, graph?: Graph): Promise<ActionResult> {
+export interface RunOptions {
+  /**
+   * Replay the workflow's pinned data instead of running the nodes it covers.
+   * The editor sets this; nothing else can, which is what keeps a triggered run
+   * away from pinned data.
+   */
+  usePinnedData?: boolean;
+  /** Start here instead of at the top, taking the input from upstream pins. */
+  resumeFromNodeId?: string;
+}
+
+export async function runWorkflowAction(
+  workflowId: string,
+  graph?: Graph,
+  options: RunOptions = {},
+): Promise<ActionResult> {
   await requireUser();
 
   // Running from the editor saves first. Otherwise Run would execute the last
@@ -235,6 +276,26 @@ export async function runWorkflowAction(workflowId: string, graph?: Graph): Prom
     });
     await ensureCurrentVersion(workflowId, graph, saved.currentVersionId);
     await syncTriggers(workflowId, graph, saved.active);
+    await prunePinsForGraph(workflowId, graph);
+  }
+
+  // Where a run may start is asked again here, not only by the editor before it
+  // offers the button. The answer can change between render and click — another
+  // tab unpins, the save above moves the node into a loop — and a run started on
+  // a stale answer is exactly the silent empty run the refusal exists to stop.
+  if (options.resumeFromNodeId !== undefined) {
+    const workflow = await prisma.workflow.findUnique({
+      where: { id: workflowId },
+      select: { graph: true },
+    });
+    if (!workflow) return { ok: false, error: 'That workflow no longer exists.' };
+
+    const current = workflow.graph as unknown as Graph;
+    // The pins the runner will actually see, which is a smaller set than the
+    // rows: one on a deleted node or inside a loop never reaches it.
+    const pinnedIds = new Set(Object.keys(await pinnedOutputsFor(workflowId, current)));
+    const refusal = resumeRefusal(current, options.resumeFromNodeId, pinnedIds);
+    if (refusal) return { ok: false, error: refusal };
   }
 
   try {
@@ -242,6 +303,8 @@ export async function runWorkflowAction(workflowId: string, graph?: Graph): Prom
       workflowId,
       trigger: 'manual',
       input: [{ json: {} }],
+      usePinnedData: options.usePinnedData,
+      resumeFromNodeId: options.resumeFromNodeId,
     });
 
     revalidatePath('/executions');
@@ -249,6 +312,134 @@ export async function runWorkflowAction(workflowId: string, graph?: Graph): Prom
   } catch (error) {
     return { ok: false, error: describe(error, 'The run could not be queued.') };
   }
+}
+
+/**
+ * The state of a run, for the editor to poll while it is in flight.
+ *
+ * The editor polls rather than holding a socket, the same as the execution
+ * detail view and for the same reason: a three-second refresh on a page nobody
+ * leaves open for hours is not worth the machinery.
+ */
+export interface RunStateView {
+  id: string;
+  status: string;
+  errorNodeId: string | null;
+  errorNodeName: string | null;
+  errorType: string | null;
+  errorMessage: string | null;
+  runs: Array<{
+    id: string;
+    nodeId: string;
+    nodeName: string;
+    nodeType: string;
+    status: string;
+    attempt: number;
+    iteration: number;
+    sequence: number;
+    durationMs: number | null;
+    startedAt: string;
+    input: unknown;
+    output: unknown;
+    inputTruncated: boolean;
+    outputTruncated: boolean;
+    error: unknown;
+  }>;
+}
+
+export async function runStateAction(executionId: string): Promise<RunStateView | null> {
+  await requireUser();
+
+  const execution = await prisma.execution.findUnique({
+    where: { id: executionId },
+    include: { nodeRuns: { orderBy: { sequence: 'asc' } } },
+  });
+
+  if (!execution) return null;
+
+  return {
+    id: execution.id,
+    status: execution.status,
+    errorNodeId: execution.errorNodeId,
+    errorNodeName: execution.errorNodeName,
+    errorType: execution.errorType,
+    errorMessage: execution.errorMessage,
+    runs: execution.nodeRuns.map((run) => ({
+      id: run.id,
+      nodeId: run.nodeId,
+      nodeName: run.nodeName,
+      nodeType: run.nodeType,
+      status: run.status,
+      attempt: run.attempt,
+      iteration: run.iteration,
+      sequence: run.sequence,
+      durationMs: run.durationMs,
+      startedAt: run.startedAt.toISOString(),
+      input: run.input,
+      output: run.output,
+      inputTruncated: run.inputTruncated,
+      outputTruncated: run.outputTruncated,
+      error: run.error,
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pinned data
+// ---------------------------------------------------------------------------
+
+/**
+ * Freeze what a node produced.
+ *
+ * The items come from a NodeRun rather than from the caller, so a pin is always
+ * something the workflow really produced. Trusting a payload posted from the
+ * browser would make this an endpoint for writing arbitrary items into a run.
+ */
+export async function pinNodeOutputAction(
+  workflowId: string,
+  nodeId: string,
+  nodeRunId: string,
+): Promise<ActionResult> {
+  await requireUser();
+
+  const run = await prisma.nodeRun.findUnique({
+    where: { id: nodeRunId },
+    select: { nodeId: true, output: true, executionId: true, execution: { select: { workflowId: true } } },
+  });
+
+  if (!run || run.nodeId !== nodeId || run.execution.workflowId !== workflowId) {
+    return { ok: false, error: 'That run is not this node\'s.' };
+  }
+
+  const items = Array.isArray(run.output) ? (run.output as unknown as Item[]) : [];
+  if (items.length === 0) {
+    return { ok: false, error: 'That run produced no items, so there is nothing to pin.' };
+  }
+
+  const result = await setPin({
+    workflowId,
+    nodeId,
+    // NodeRun flattens the branches for display, so this is the one branch a
+    // pin can restore — the same limitation that makes a retry from downstream
+    // of an If start at the If.
+    items: [items],
+    sourceExecutionId: run.executionId,
+  });
+
+  if (!result.ok) return { ok: false, error: result.error };
+
+  revalidatePath(`/workflows/${workflowId}`);
+
+  return result.truncated
+    ? { ok: true, error: 'Pinned, but only part of that payload was stored. The rest is not in the pin.' }
+    : { ok: true };
+}
+
+export async function unpinNodeAction(workflowId: string, nodeId: string): Promise<ActionResult> {
+  await requireUser();
+  await removePin(workflowId, nodeId);
+  revalidatePath(`/workflows/${workflowId}`);
+  return { ok: true };
 }
 
 export async function retryExecutionAction(executionId: string, fromFailedNode: boolean): Promise<ActionResult> {

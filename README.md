@@ -30,6 +30,12 @@ into failures are all part of the thing, not part of a paid tier.
   distinct problems they actually are.
 - **Retry from the failed node.** Upstream side effects already happened, so a
   partial retry resumes with the stored input rather than running them again.
+- **Pinned data, and results where you are building.** Running from the editor
+  stays in the editor: outcomes are painted onto the canvas and the node you
+  click shows the items that went in and came out. Freeze a node's output and
+  it is replayed instead of run, so iterating on the seventh node stops
+  re-sending the Telegram message the first one sends. A live run cannot reach
+  a pin — see [docs/pinned-data.md](docs/pinned-data.md).
 
 ## Getting started
 
@@ -305,6 +311,14 @@ the gap: the poller's leasing is only exercised by running two workers.
   item came from.
 - **Schedules have minute resolution.** The scheduler ticks once a minute and
   claims what is due.
+- **A pin restores one output branch.** `NodeRun` flattens branches for display,
+  so pinning an If keeps what it produced, not which branch each item left by.
+  The same limitation as a retry from downstream of an If, and it should be
+  fixed in one place.
+- **Nothing inside a loop can be pinned.** A loop body runs once per pass and a
+  pin would freeze every pass to the same items, so it is refused by name.
+- **Pinned data cannot be typed in.** A pin is always something a run really
+  produced. Hand-written fixtures are a different feature.
 
 ## License
 

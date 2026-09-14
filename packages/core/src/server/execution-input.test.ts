@@ -36,6 +36,20 @@ test('the trigger and the resume point survive the round trip', () => {
   });
 });
 
+test('the pinned-data flag survives the round trip, and is absent unless set', () => {
+  const pinned = readExecutionInput(storedExecutionInput({ seedItems: items, usePinnedData: true }));
+  assert.equal(pinned.usePinnedData, true);
+
+  // A run that never mentioned pins reads back without the key at all, rather
+  // than with a false that a later `in` check would trip over.
+  const plain = readExecutionInput(storedExecutionInput({ seedItems: items }));
+  assert.equal('usePinnedData' in plain, false);
+
+  // And it is not something a trigger can turn on by accident: the flag only
+  // exists because whoever queued the run put it there.
+  assert.equal(readExecutionInput(items).usePinnedData, undefined);
+});
+
 test('either node id can be set on its own', () => {
   const triggered = readExecutionInput(
     storedExecutionInput({ seedItems: items, triggerNodeId: 'schedule_1' }),

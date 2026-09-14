@@ -11,7 +11,7 @@ import {
   validateGraph,
   withoutBackEdges,
 } from '../graph.js';
-import { requireNodeDefinition } from '../nodes/executors.js';
+import { getNodeDefinition, requireNodeDefinition } from '../nodes/executors.js';
 import { isParamVisible, paramUsesExpressions, resolveOutputs, validateParams } from '../nodes/index.js';
 import {
   NodeError,
@@ -34,7 +34,7 @@ import {
 // code path.
 // ---------------------------------------------------------------------------
 
-export type NodeRunStatus = 'success' | 'failed' | 'skipped';
+export type NodeRunStatus = 'success' | 'failed' | 'skipped' | 'pinned';
 
 export interface NodeStartEvent {
   type: 'nodeStart';
@@ -133,6 +133,18 @@ export interface RunnerContext {
   resumeFromNodeId?: string;
   /** Node outputs recovered from a previous execution, keyed by node id. */
   restoredOutputs?: Record<string, Item[][]>;
+  /**
+   * Outputs the editor froze, keyed by node id. A node listed here does not
+   * execute: it emits its pinned items and everything downstream gathers input
+   * from them as if it had produced them.
+   *
+   * Separate from `restoredOutputs` because the two answer different questions.
+   * That one means "everything before the retry point already ran", and only
+   * ever covers a prefix of the order. A pin can sit anywhere, with live nodes
+   * on both sides of it, and the detail view has to be able to tell the author
+   * froze this from this was restored.
+   */
+  pinnedOutputs?: Record<string, Item[][]>;
   signal: AbortSignal;
   /** Decrypt a credential by its id. Injected so core stays database-free. */
   loadCredential(credentialId: string): Promise<Record<string, string> | null>;
@@ -300,6 +312,33 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       }
     }
 
+    // A pin stands in for the node. Checked here rather than at the top of the
+    // step, because everything above decides whether this node is reached at
+    // all, and freezing what a node produces should not resurrect a branch the
+    // If rejected or turn a second trigger into the one that fired.
+    // `options.input` is set only for a loop node's own turn, which is never
+    // pinnable: a pin would freeze every pass to the same batch.
+    const pinned = options.input === undefined ? ctx.pinnedOutputs?.[node.id] : undefined;
+    if (pinned) {
+      const output = normaliseOutput(pinned, resolveOutputs(definition, node.params));
+      outputs[node.id] = output;
+      await ctx.emit({
+        type: 'nodeFinish',
+        nodeId: node.id,
+        nodeName: node.name,
+        nodeType: node.type,
+        attempt: 1,
+        iteration,
+        sequence: sequence++,
+        status: 'pinned',
+        input,
+        output: output.flat(),
+        durationMs: 0,
+        finishedAt: new Date(),
+      });
+      return OK;
+    }
+
     const continueOnFail = node.continueOnFail === true && options.ignoreContinueOnFail !== true;
 
     const paramIssues = validateParams(node.id, definition, node.params);
@@ -442,6 +481,33 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
     return { kind: 'failed', failure: toFailure(loop, error) };
   }
 
+  /**
+   * Settle a node the resume point has stepped over.
+   *
+   * A pin above the start point is the whole reason the run was started there,
+   * so its items are laid down as that node's output and everything downstream
+   * gathers from them. Without a pin the node is skipped, and a node fed only
+   * by skipped nodes is skipped in turn — which is what a retry wants, and what
+   * `resumeRefusal` refuses to let the editor ask for.
+   *
+   * Neither case executes the node. The difference is only whether it has an
+   * output to hand on.
+   */
+  function laySkippedPrefix(node: GraphNode): void {
+    const frozen = ctx.pinnedOutputs?.[node.id];
+    const definition = frozen ? getNodeDefinition(node.type) : undefined;
+
+    // No definition means a node type this build does not have. It is not going
+    // to run either way, so it is skipped rather than failing a run that was
+    // never going to reach it.
+    if (frozen && definition) {
+      outputs[node.id] = normaliseOutput(frozen, resolveOutputs(definition, node.params));
+      return;
+    }
+
+    skipped.add(node.id);
+  }
+
   for (const node of order) {
     if (ctx.signal.aborted) {
       return { status: 'cancelled', outputs, durationMs: Date.now() - startedAt };
@@ -453,7 +519,7 @@ export async function runWorkflow(ctx: RunnerContext): Promise<RunResult> {
       // the wrong thing.
       if (node.id === ctx.resumeFromNodeId) startReached = true;
       else {
-        if (!(node.id in outputs)) skipped.add(node.id);
+        if (!(node.id in outputs)) laySkippedPrefix(node);
         continue;
       }
     }

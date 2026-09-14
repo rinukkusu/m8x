@@ -19,6 +19,15 @@ export interface ExecutionInput {
   triggerNodeId?: string;
   /** Node a retry picks up from, skipping everything before it. */
   resumeFromNodeId?: string;
+  /**
+   * Replay this workflow's pinned data instead of running the nodes it covers.
+   *
+   * A flag rather than the pins themselves. Copying the payloads in would bloat
+   * a column that is read back on every retry, and a copy taken at queue time
+   * would go stale — re-running a five-minute-old execution should use the pins
+   * as they are now. Only a run the editor started ever sets it.
+   */
+  usePinnedData?: boolean;
 }
 
 /**
@@ -26,7 +35,11 @@ export interface ExecutionInput {
  * overwhelming majority of runs and keeps the column readable.
  */
 export function storedExecutionInput(input: ExecutionInput): unknown {
-  if (input.triggerNodeId === undefined && input.resumeFromNodeId === undefined) {
+  if (
+    input.triggerNodeId === undefined &&
+    input.resumeFromNodeId === undefined &&
+    input.usePinnedData !== true
+  ) {
     return input.seedItems;
   }
 
@@ -34,6 +47,7 @@ export function storedExecutionInput(input: ExecutionInput): unknown {
     items: input.seedItems,
     ...(input.triggerNodeId === undefined ? {} : { triggerNodeId: input.triggerNodeId }),
     ...(input.resumeFromNodeId === undefined ? {} : { resumeFromNodeId: input.resumeFromNodeId }),
+    ...(input.usePinnedData === true ? { usePinnedData: true } : {}),
   };
 }
 
@@ -55,6 +69,7 @@ export function readExecutionInput(stored: unknown): ExecutionInput {
       items?: unknown;
       triggerNodeId?: unknown;
       resumeFromNodeId?: unknown;
+      usePinnedData?: unknown;
       startNodeId?: unknown;
     };
     const legacy = asNodeId(shaped.startNodeId);
@@ -63,6 +78,9 @@ export function readExecutionInput(stored: unknown): ExecutionInput {
       seedItems: Array.isArray(shaped.items) ? (shaped.items as Item[]) : [],
       triggerNodeId: asNodeId(shaped.triggerNodeId) ?? legacy,
       resumeFromNodeId: asNodeId(shaped.resumeFromNodeId) ?? legacy,
+      // Left off rather than set to false, so a payload that never mentioned
+      // pins reads back exactly as it was written.
+      ...(shaped.usePinnedData === true ? { usePinnedData: true } : {}),
     };
   }
 
