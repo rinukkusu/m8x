@@ -16,28 +16,12 @@ import { useEffect, useMemo, useState, useTransition } from 'react';
 
 import { retryExecutionAction } from '@/app/actions/workflows';
 import { CanvasNodeView, type CanvasNode } from './editor/canvas-node';
-import { Badge, Button, cx, formatDuration, formatRelative, type StatusTone } from './ui';
+import { NodeRunPanel, PanelNotice, type NodeRunView } from './node-run-panel';
+import { Badge, Button, formatDuration, formatRelative, type StatusTone } from './ui';
+
+export type { NodeRunView };
 
 const nodeTypes = { m8x: CanvasNodeView };
-
-export interface NodeRunView {
-  id: string;
-  nodeId: string;
-  nodeName: string;
-  nodeType: string;
-  status: string;
-  attempt: number;
-  /** Which pass of a loop this row is. 0 outside any loop. */
-  iteration: number;
-  sequence: number;
-  durationMs: number | null;
-  startedAt: string;
-  input: unknown;
-  output: unknown;
-  inputTruncated: boolean;
-  outputTruncated: boolean;
-  error: unknown;
-}
 
 export interface ExecutionSummary {
   id: string;
@@ -252,21 +236,21 @@ function ExecutionViewInner({
 
         <aside className="flex w-[26rem] shrink-0 flex-col overflow-hidden border-l border-line bg-surface-1">
           {selectedRuns.length === 0 ? (
-            <div className="p-4 text-sm text-ink-faint">
+            <PanelNotice>
               {selectedNodeId
                 ? 'This node did not run. Its branch was not taken, or the run stopped before reaching it.'
                 : 'Click a node to see what went in and what came out.'}
-            </div>
+            </PanelNotice>
           ) : (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {selectedRuns.map((run, index) => (
                 <NodeRunPanel
-                    key={run.id}
-                    run={run}
-                    isLatest={index === 0}
-                    showAttempt={selectedRuns.some((candidate) => candidate.attempt > 1)}
-                    childExecutionIds={index === 0 ? (childExecutions[run.nodeId] ?? []) : []}
-                  />
+                  key={run.id}
+                  run={run}
+                  isLatest={index === 0}
+                  showAttempt={selectedRuns.some((candidate) => candidate.attempt > 1)}
+                  childExecutionIds={index === 0 ? (childExecutions[run.nodeId] ?? []) : []}
+                />
               ))}
             </div>
           )}
@@ -274,123 +258,4 @@ function ExecutionViewInner({
       </div>
     </>
   );
-}
-
-function NodeRunPanel({
-  run,
-  isLatest,
-  showAttempt,
-  childExecutionIds,
-}: {
-  run: NodeRunView;
-  isLatest: boolean;
-  showAttempt: boolean;
-  childExecutionIds: string[];
-}) {
-  const [tab, setTab] = useState<'output' | 'input'>(run.status === 'failed' ? 'input' : 'output');
-  const error = run.error as { errorType?: string; message?: string; stack?: string; logs?: Array<{ level: string; message: string }> } | null;
-  const logs = error?.logs ?? [];
-
-  return (
-    <div className={cx('border-b border-line', !isLatest && 'opacity-70')}>
-      <div className="flex items-center gap-2 px-4 py-2.5">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{run.nodeName}</span>
-        {run.iteration > 0 ? (
-          <span className="text-[11px] text-ink-faint">pass {run.iteration}</span>
-        ) : null}
-        {showAttempt ? <span className="text-[11px] text-ink-faint">attempt {run.attempt}</span> : null}
-        <Badge tone={run.status as StatusTone}>{run.status}</Badge>
-        <span className="text-[11px] text-ink-faint">{formatDuration(run.durationMs)}</span>
-      </div>
-
-      {childExecutionIds.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 px-4 pb-2.5 text-[11px] text-ink-faint">
-          <span>Ran</span>
-          {childExecutionIds.map((id, index) => (
-            <Link key={id} href={`/executions/${id}`} className="text-accent hover:underline">
-              {childExecutionIds.length > 1 ? `run ${index + 1}` : 'the sub-workflow'}
-            </Link>
-          ))}
-        </div>
-      ) : null}
-
-      {run.status === 'failed' && error?.message ? (
-        <div className="mx-4 mb-2.5 rounded-md border border-bad/25 bg-bad/10 p-2.5">
-          <p className="font-mono text-[11px] text-bad">{error.errorType}</p>
-          <p className="mt-1 text-xs leading-relaxed text-bad">{error.message}</p>
-          {error.stack ? (
-            <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-bad/75">
-              {error.stack}
-            </pre>
-          ) : null}
-        </div>
-      ) : null}
-
-      {run.status === 'skipped' ? (
-        <p className="px-4 pb-2.5 text-xs text-ink-faint">{error?.message ?? 'Skipped.'}</p>
-      ) : null}
-
-      {logs.length > 0 ? (
-        <div className="mx-4 mb-2.5 max-h-32 overflow-y-auto rounded-md border border-line bg-surface-0 p-2">
-          {logs.map((entry, index) => (
-            <p
-              key={index}
-              className={cx(
-                'font-mono text-[10px] leading-relaxed',
-                entry.level === 'error' ? 'text-bad' : entry.level === 'warn' ? 'text-warn' : 'text-ink-muted',
-              )}
-            >
-              {entry.message}
-            </p>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="flex gap-1 px-4">
-        {(['input', 'output'] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setTab(value)}
-            className={cx(
-              'rounded px-2 py-1 text-xs capitalize transition-colors',
-              tab === value ? 'bg-surface-3 text-ink' : 'text-ink-faint hover:text-ink',
-            )}
-          >
-            {value} ({countItems(value === 'input' ? run.input : run.output)})
-          </button>
-        ))}
-      </div>
-
-      <ItemsView
-        value={tab === 'input' ? run.input : run.output}
-        truncated={tab === 'input' ? run.inputTruncated : run.outputTruncated}
-      />
-    </div>
-  );
-}
-
-function ItemsView({ value, truncated }: { value: unknown; truncated: boolean }) {
-  const items = Array.isArray(value) ? value : [];
-
-  if (items.length === 0) {
-    return <p className="px-4 py-3 text-xs text-ink-faint">No items.</p>;
-  }
-
-  return (
-    <div className="px-4 py-2">
-      {truncated ? (
-        <p className="mb-1.5 text-[11px] text-warn">
-          Only part of this payload was stored. The full data went through the workflow.
-        </p>
-      ) : null}
-      <pre className="max-h-80 overflow-auto rounded-md border border-line bg-surface-0 p-2.5 font-mono text-[11px] leading-relaxed text-ink-muted">
-        {JSON.stringify(items.map((item) => (item as { json?: unknown })?.json ?? item), null, 2)}
-      </pre>
-    </div>
-  );
-}
-
-function countItems(value: unknown): number {
-  return Array.isArray(value) ? value.length : 0;
 }

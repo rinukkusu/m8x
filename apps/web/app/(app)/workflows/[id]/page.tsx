@@ -1,5 +1,12 @@
 import type { Graph } from '@m8x/core';
-import { CREDENTIAL_TYPES, listCredentials, listDatatables, prisma, webhookUrlFor } from '@m8x/core/server';
+import {
+  CREDENTIAL_TYPES,
+  listCredentials,
+  listDatatables,
+  listPins,
+  prisma,
+  webhookUrlFor,
+} from '@m8x/core/server';
 import { notFound } from 'next/navigation';
 
 import { Editor } from '@/components/editor/editor';
@@ -19,9 +26,10 @@ export default async function WorkflowEditorPage({ params }: { params: Promise<{
 
   if (!workflow) notFound();
 
-  const [credentials, datatables, triggers, lastExecution] = await Promise.all([
+  const [credentials, datatables, pins, triggers, lastExecution] = await Promise.all([
     listCredentials(),
     listDatatables(),
+    listPins(id),
     prisma.trigger.findMany({
       where: { workflowId: id, kind: 'webhook' },
       select: { nodeId: true, webhookPath: true },
@@ -48,6 +56,11 @@ export default async function WorkflowEditorPage({ params }: { params: Promise<{
       }))}
       credentialTypes={CREDENTIAL_TYPES}
       datatables={datatables.map((table) => ({ id: table.id, name: table.name, columns: table.columns }))}
+      pins={pins.map((entry) => ({
+        nodeId: entry.nodeId,
+        truncated: entry.truncated,
+        createdAt: entry.createdAt,
+      }))}
       webhookUrls={Object.fromEntries(
         triggers
           .filter((trigger) => trigger.webhookPath)

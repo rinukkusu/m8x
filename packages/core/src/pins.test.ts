@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { edge, node } from '../test-support.js';
-import type { Graph, Item } from '../types.js';
-import { capturePinnedOutput, MAX_ITEMS_STORED } from './payload.js';
 import { pinRefusal } from './pins.js';
+import { capturePinnedOutput, MAX_ITEMS_STORED } from './server/payload.js';
+import { edge, node } from './test-support.js';
+import type { Graph, Item } from './types.js';
 
 /**
  * The pure half of pinned data: which nodes may hold a pin, and how a pin is

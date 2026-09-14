@@ -7,6 +7,7 @@ import {
   ensureCurrentVersion,
   moveFolder,
   prisma,
+  listPins,
   prunePinsForGraph,
   removePin,
   retryExecution,
@@ -220,6 +221,24 @@ export async function setActiveAction(workflowId: string, active: boolean): Prom
     return { ok: false, error: `The webhook path ${sync.conflicts[0]!.path} is already taken by another workflow.` };
   }
 
+  // Activating with pins left on is not an error — a live run ignores them —
+  // but it is the moment somebody finds out their tested workflow and their
+  // real one are not the same thing, so say which nodes are affected.
+  if (active) {
+    const pinned = await listPins(workflowId);
+    const live = new Set(graph.nodes.map((node) => node.id));
+    const names = pinned
+      .filter((pin) => live.has(pin.nodeId))
+      .map((pin) => graph.nodes.find((node) => node.id === pin.nodeId)?.name ?? pin.nodeId);
+
+    if (names.length > 0) {
+      return {
+        ok: true,
+        error: `Active. ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} still pinned — this workflow will run ${names.length === 1 ? 'it' : 'them'} for real, not replay the pinned items.`,
+      };
+    }
+  }
+
   return { ok: true };
 }
 
@@ -273,6 +292,76 @@ export async function runWorkflowAction(
   } catch (error) {
     return { ok: false, error: describe(error, 'The run could not be queued.') };
   }
+}
+
+/**
+ * The state of a run, for the editor to poll while it is in flight.
+ *
+ * The editor polls rather than holding a socket, the same as the execution
+ * detail view and for the same reason: a three-second refresh on a page nobody
+ * leaves open for hours is not worth the machinery.
+ */
+export interface RunStateView {
+  id: string;
+  status: string;
+  errorNodeId: string | null;
+  errorNodeName: string | null;
+  errorType: string | null;
+  errorMessage: string | null;
+  runs: Array<{
+    id: string;
+    nodeId: string;
+    nodeName: string;
+    nodeType: string;
+    status: string;
+    attempt: number;
+    iteration: number;
+    sequence: number;
+    durationMs: number | null;
+    startedAt: string;
+    input: unknown;
+    output: unknown;
+    inputTruncated: boolean;
+    outputTruncated: boolean;
+    error: unknown;
+  }>;
+}
+
+export async function runStateAction(executionId: string): Promise<RunStateView | null> {
+  await requireUser();
+
+  const execution = await prisma.execution.findUnique({
+    where: { id: executionId },
+    include: { nodeRuns: { orderBy: { sequence: 'asc' } } },
+  });
+
+  if (!execution) return null;
+
+  return {
+    id: execution.id,
+    status: execution.status,
+    errorNodeId: execution.errorNodeId,
+    errorNodeName: execution.errorNodeName,
+    errorType: execution.errorType,
+    errorMessage: execution.errorMessage,
+    runs: execution.nodeRuns.map((run) => ({
+      id: run.id,
+      nodeId: run.nodeId,
+      nodeName: run.nodeName,
+      nodeType: run.nodeType,
+      status: run.status,
+      attempt: run.attempt,
+      iteration: run.iteration,
+      sequence: run.sequence,
+      durationMs: run.durationMs,
+      startedAt: run.startedAt.toISOString(),
+      input: run.input,
+      output: run.output,
+      inputTruncated: run.inputTruncated,
+      outputTruncated: run.outputTruncated,
+      error: run.error,
+    })),
+  };
 }
 
 // ---------------------------------------------------------------------------

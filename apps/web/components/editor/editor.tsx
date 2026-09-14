@@ -4,6 +4,7 @@ import {
   NODE_DESCRIPTORS,
   defaultParams,
   getNodeDescriptor,
+  pinRefusal,
   resolveOutputs,
   validateGraph,
   type Graph,
@@ -25,16 +26,25 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react';
-import { AlertTriangle, ArrowLeft, Play, Plus, Save } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ExternalLink, Pin, Play, Plus, Save } from 'lucide-react';
 import * as icons from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 
-import { runWorkflowAction, saveGraphAction, setActiveAction } from '@/app/actions/workflows';
-import { Badge, Button, cx, formatRelative } from '../ui';
+import {
+  pinNodeOutputAction,
+  runStateAction,
+  runWorkflowAction,
+  saveGraphAction,
+  setActiveAction,
+  unpinNodeAction,
+  type RunStateView,
+} from '@/app/actions/workflows';
+import type { NodeRunView } from '../node-run-panel';
+import { Badge, Button, cx, formatRelative, type StatusTone } from '../ui';
 import { CanvasNodeView, type CanvasNode } from './canvas-node';
-import { Inspector } from './inspector';
+import { Inspector, type InspectorResults } from './inspector';
 import type { CredentialOption, DatatableOption } from './param-field';
 
 const nodeTypes = { m8x: CanvasNodeView };
@@ -46,12 +56,20 @@ export interface EditorWorkflow {
   graph: Graph;
 }
 
+/** One node's pin, as the editor needs to know about it. */
+export interface EditorPin {
+  nodeId: string;
+  truncated: boolean;
+  createdAt: string;
+}
+
 export function Editor(props: {
   workflow: EditorWorkflow;
   credentials: CredentialOption[];
   credentialTypes: CredentialType[];
   datatables: DatatableOption[];
   webhookUrls: Record<string, string>;
+  pins: EditorPin[];
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
   return (
@@ -67,6 +85,7 @@ function EditorInner({
   credentialTypes,
   datatables,
   webhookUrls,
+  pins,
   lastExecution,
 }: {
   workflow: EditorWorkflow;
@@ -74,6 +93,7 @@ function EditorInner({
   credentialTypes: CredentialType[];
   datatables: DatatableOption[];
   webhookUrls: Record<string, string>;
+  pins: EditorPin[];
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
   const router = useRouter();
@@ -84,9 +104,11 @@ function EditorInner({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: 'ok' | 'bad'; text: string } | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [run, setRun] = useState<RunStateView | null>(null);
   const [pending, startTransition] = useTransition();
 
   const graph = useMemo(() => toGraph(nodes, edges), [nodes, edges]);
+  const pinnedIds = useMemo(() => new Set(pins.map((entry) => entry.nodeId)), [pins]);
   const warnings = useMemo(() => validateGraph(graph), [graph]);
   const selected = nodes.find((node) => node.id === selectedId)?.data.node ?? null;
 
@@ -133,6 +155,57 @@ function EditorInner({
     const timer = setTimeout(() => setMessage(null), 4000);
     return () => clearTimeout(timer);
   }, [message]);
+
+  /**
+   * Follow the run while it is going.
+   *
+   * Polling rather than a socket, the same as the execution detail view: three
+   * seconds is fine for a page nobody leaves open for hours, and it keeps the
+   * two screens on one mechanism.
+   */
+  const runInFlight = run !== null && (run.status === 'queued' || run.status === 'running');
+  const runId = run?.id ?? null;
+
+  useEffect(() => {
+    if (!runInFlight || !runId) return;
+    let cancelled = false;
+    // A slow answer must not stack another request behind it: a workflow that
+    // makes the database crawl is exactly when this would pile up.
+    let asking = false;
+
+    const timer = setInterval(async () => {
+      if (asking) return;
+      asking = true;
+      try {
+        const next = await runStateAction(runId);
+        // A run that has vanished leaves the last state on screen rather than
+        // blanking it: what it did before it was pruned is still the answer.
+        if (!cancelled && next) setRun(next);
+      } finally {
+        asking = false;
+      }
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [runInFlight, runId]);
+
+  /**
+   * The last row per node, which is the outcome the canvas shows.
+   *
+   * Last by sequence rather than by attempt, so a node inside a loop paints the
+   * pass that ran most recently instead of an arbitrary one.
+   */
+  const latestByNode = useMemo(() => {
+    const map = new Map<string, NodeRunView>();
+    for (const entry of run?.runs ?? []) {
+      const current = map.get(entry.nodeId);
+      if (!current || entry.sequence >= current.sequence) map.set(entry.nodeId, entry);
+    }
+    return map;
+  }, [run]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -231,15 +304,69 @@ function EditorInner({
     [setEdges],
   );
 
-  function run() {
+  /**
+   * Run, and stay here.
+   *
+   * Pinned data is replayed, so iterating does not re-fire the trigger and
+   * everything under it. `resumeFromNodeId` starts partway down, taking that
+   * node's input from the pins upstream.
+   */
+  function startRun(resumeFromNodeId?: string) {
     startTransition(async () => {
-      const result = await runWorkflowAction(workflow.id, toGraph(nodes, edges));
-      if (!result.ok) {
+      setRun(null);
+      const result = await runWorkflowAction(workflow.id, toGraph(nodes, edges), {
+        usePinnedData: true,
+        resumeFromNodeId,
+      });
+      if (!result.ok || !result.id) {
         setMessage({ tone: 'bad', text: result.error ?? 'The run could not start.' });
         return;
       }
-      router.push(`/executions/${result.id}`);
+      setRun(await runStateAction(result.id));
+      router.refresh();
     });
+  }
+
+  function pinNode(nodeId: string, nodeRunId: string) {
+    startTransition(async () => {
+      const result = await pinNodeOutputAction(workflow.id, nodeId, nodeRunId);
+      if (!result.ok) {
+        setMessage({ tone: 'bad', text: result.error ?? 'That could not be pinned.' });
+        return;
+      }
+      setMessage(result.error ? { tone: 'bad', text: result.error } : { tone: 'ok', text: 'Pinned.' });
+      router.refresh();
+    });
+  }
+
+  function unpinNode(nodeId: string) {
+    startTransition(async () => {
+      await unpinNodeAction(workflow.id, nodeId);
+      setMessage({ tone: 'ok', text: 'Unpinned.' });
+      router.refresh();
+    });
+  }
+
+  /**
+   * Why this node cannot start a run, or null when it can.
+   *
+   * Every node feeding it has to be pinned. Without that it gathers input from
+   * nodes that were skipped and never produced anything, and the run does
+   * nothing while looking like it worked.
+   */
+  function runFromHereRefusal(nodeId: string): string | null {
+    const feeding = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source);
+    if (feeding.length === 0) {
+      return 'Nothing feeds this node, so a run from here is the same as a run from the top.';
+    }
+
+    const unpinned = feeding.filter((id) => !pinnedIds.has(id));
+    if (unpinned.length === 0) return null;
+
+    const names = unpinned
+      .map((id) => nodes.find((candidate) => candidate.id === id)?.data.node.name ?? id)
+      .join(', ');
+    return `Pin ${names} first — a run from here takes this node's input from the pins above it.`;
   }
 
   function toggleActive() {
@@ -249,6 +376,9 @@ function EditorInner({
         setMessage({ tone: 'bad', text: result.error ?? 'That did not work.' });
         return;
       }
+      // A warning rather than a failure: activating with pins left on works,
+      // it just does not do what the last run in this editor did.
+      if (result.error) setMessage({ tone: 'bad', text: result.error });
       router.refresh();
     });
   }
@@ -268,7 +398,18 @@ function EditorInner({
 
         <Badge tone={workflow.active ? 'success' : 'neutral'}>{workflow.active ? 'active' : 'inactive'}</Badge>
 
-        {lastExecution ? (
+        {run ? (
+          <>
+            <Badge tone={run.status as StatusTone}>{run.status}</Badge>
+            <Link
+              href={`/executions/${run.id}`}
+              className="flex items-center gap-1 text-xs text-ink-faint transition-colors hover:text-ink"
+            >
+              open the full run
+              <ExternalLink className="size-3" />
+            </Link>
+          </>
+        ) : lastExecution ? (
           <Link
             href={`/executions/${lastExecution.id}`}
             className="truncate text-xs text-ink-faint transition-colors hover:text-ink"
@@ -297,7 +438,7 @@ function EditorInner({
           {workflow.active ? 'Deactivate' : 'Activate'}
         </Button>
 
-        <Button size="sm" variant="primary" onClick={run} disabled={pending || errors.length > 0}>
+        <Button size="sm" variant="primary" onClick={() => startRun()} disabled={pending || errors.length > 0}>
           <Play className="size-3.5" />
           Run
         </Button>
@@ -310,10 +451,42 @@ function EditorInner({
         </div>
       ) : null}
 
+      {run?.errorMessage ? (
+        <button
+          type="button"
+          onClick={() => run.errorNodeId && setSelectedId(run.errorNodeId)}
+          className="flex w-full items-start gap-2 border-b border-bad/25 bg-bad/10 px-4 py-2 text-left text-xs text-bad"
+        >
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            <span className="font-medium">{run.errorNodeName ?? 'The workflow'}</span> failed with{' '}
+            <code className="font-mono">{run.errorType}</code>: {run.errorMessage}
+          </span>
+        </button>
+      ) : null}
+
+      {pins.length > 0 ? (
+        <div className="flex items-center gap-2 border-b border-warn/25 bg-warn/10 px-4 py-2 text-xs text-warn">
+          <Pin className="size-3.5 shrink-0" />
+          <span>
+            {pins.length === 1 ? 'One node is' : `${pins.length} nodes are`} pinned. Runs started here replay
+            those items; an activated workflow runs them for real.
+          </span>
+        </div>
+      ) : null}
+
       <div className="flex min-h-0 flex-1">
         <div className="relative min-w-0 flex-1">
           <ReactFlow
-            nodes={nodes.map((node) => ({ ...node, selected: node.id === selectedId }))}
+            nodes={nodes.map((node) => ({
+              ...node,
+              selected: node.id === selectedId,
+              data: {
+                ...node.data,
+                pinned: pinnedIds.has(node.id),
+                runStatus: latestByNode.get(node.id)?.status as CanvasNode['data']['runStatus'],
+              },
+            }))}
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
@@ -340,6 +513,21 @@ function EditorInner({
             credentialTypes={credentialTypes}
             datatables={datatables}
             webhookUrl={webhookUrls[selected.id]}
+            results={{
+              runs: (run?.runs ?? [])
+                .filter((entry) => entry.nodeId === selected.id)
+                .sort((a, b) => b.sequence - a.sequence),
+              inFlight: runInFlight,
+              pin: {
+                pinned: pinnedIds.has(selected.id),
+                refusal: pinRefusal(graph, selected.id),
+                busy: pending,
+                onPin: (nodeRunId) => pinNode(selected.id, nodeRunId),
+                onUnpin: () => unpinNode(selected.id),
+              },
+              runFromHereRefusal: runFromHereRefusal(selected.id),
+              onRunFromHere: () => startRun(selected.id),
+            }}
             onChange={(patch) => patchNode(selected.id, patch)}
             onDelete={() => removeNode(selected.id)}
             onDuplicate={() => duplicateNode(selected)}
