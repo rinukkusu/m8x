@@ -4,6 +4,7 @@ import { EMPTY_GRAPH, resumeRefusal, type Graph, type Item } from '@m8x/core';
 import {
   createExecution,
   createFolder,
+  duplicateWorkflow,
   ensureCurrentVersion,
   moveFolder,
   prisma,
@@ -152,6 +153,22 @@ export async function moveWorkflowAction(workflowId: string, folderId: string | 
   await prisma.workflow.update({ where: { id: workflowId }, data: { folderId } });
   revalidatePath('/workflows');
   return { ok: true };
+}
+
+/**
+ * Copy a workflow.
+ *
+ * The rules about what a copy does and does not take live in core, beside the
+ * trigger reconciliation they have to agree with. This is the thin half.
+ */
+export async function duplicateWorkflowAction(workflowId: string): Promise<ActionResult> {
+  await requireUser();
+
+  const result = await duplicateWorkflow(workflowId);
+  if (!result.ok) return { ok: false, error: result.error };
+
+  revalidatePath('/workflows');
+  return { ok: true, id: result.id, error: result.error };
 }
 
 export async function deleteWorkflowAction(workflowId: string): Promise<ActionResult> {

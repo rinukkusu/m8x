@@ -30,6 +30,9 @@ into failures are all part of the thing, not part of a paid tier.
   distinct problems they actually are.
 - **Retry from the failed node.** Upstream side effects already happened, so a
   partial retry resumes with the stored input rather than running them again.
+- **Duplicate a workflow.** A copy in the same folder, taking the graph and
+  nothing else: never active, no history, and a webhook trigger gets its own
+  path rather than fighting the original for the same ingress.
 - **History that cleans up after itself.** Every node run stores what it saw,
   which is what makes the detail view worth opening and also what fills a disk.
   Successful runs and failed ones age out on separate clocks — a week and a
