@@ -6,7 +6,7 @@ import { Copy, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 
 import { Button, Field, Input, cx } from '../ui';
-import { ParamField, type CredentialOption } from './param-field';
+import { ParamField, type CredentialOption, type DatatableOption } from './param-field';
 
 /**
  * The right-hand panel.
@@ -19,6 +19,7 @@ export function Inspector({
   node,
   credentials,
   credentialTypes,
+  datatables,
   webhookUrl,
   onChange,
   onDelete,
@@ -28,6 +29,7 @@ export function Inspector({
   node: GraphNode;
   credentials: CredentialOption[];
   credentialTypes: CredentialType[];
+  datatables: DatatableOption[];
   webhookUrl?: string;
   onChange: (patch: Partial<GraphNode>) => void;
   onDelete: () => void;
@@ -102,6 +104,8 @@ export function Inspector({
                 value={node.params[schema.name] ?? schema.default}
                 credentials={credentials}
                 credentialTypes={credentialTypes}
+                datatables={datatables}
+                siblings={node.params}
                 onChange={(value) => onChange({ params: { ...node.params, [schema.name]: value } })}
               />
             ))}

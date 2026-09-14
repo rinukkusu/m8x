@@ -12,6 +12,7 @@ const NAV = [
   { href: '/workflows', icon: 'Workflow', label: 'Workflows' },
   { href: '/executions', icon: 'ListChecks', label: 'Executions' },
   { href: '/insights', icon: 'ChartNoAxesColumn', label: 'Insights' },
+  { href: '/datatables', icon: 'Table2', label: 'Datatables' },
   { href: '/credentials', icon: 'KeyRound', label: 'Credentials' },
 ] as const;
 

@@ -35,7 +35,7 @@ import { runWorkflowAction, saveGraphAction, setActiveAction } from '@/app/actio
 import { Badge, Button, cx, formatRelative } from '../ui';
 import { CanvasNodeView, type CanvasNode } from './canvas-node';
 import { Inspector } from './inspector';
-import type { CredentialOption } from './param-field';
+import type { CredentialOption, DatatableOption } from './param-field';
 
 const nodeTypes = { m8x: CanvasNodeView };
 
@@ -50,6 +50,7 @@ export function Editor(props: {
   workflow: EditorWorkflow;
   credentials: CredentialOption[];
   credentialTypes: CredentialType[];
+  datatables: DatatableOption[];
   webhookUrls: Record<string, string>;
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
@@ -64,12 +65,14 @@ function EditorInner({
   workflow,
   credentials,
   credentialTypes,
+  datatables,
   webhookUrls,
   lastExecution,
 }: {
   workflow: EditorWorkflow;
   credentials: CredentialOption[];
   credentialTypes: CredentialType[];
+  datatables: DatatableOption[];
   webhookUrls: Record<string, string>;
   lastExecution: { id: string; status: string; at: string } | null;
 }) {
@@ -335,6 +338,7 @@ function EditorInner({
             node={selected}
             credentials={credentials}
             credentialTypes={credentialTypes}
+            datatables={datatables}
             webhookUrl={webhookUrls[selected.id]}
             onChange={(patch) => patchNode(selected.id, patch)}
             onDelete={() => removeNode(selected.id)}

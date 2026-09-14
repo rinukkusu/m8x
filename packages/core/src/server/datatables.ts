@@ -197,14 +197,28 @@ export async function countRows(datatableId: string, filter?: DatatableFilter): 
  */
 async function matchedRows(
   table: Datatable,
-  filter: DatatableFilter,
+  target: WriteTarget,
   scope: 'first' | 'all',
 ): Promise<DatatableRow[]> {
+  if (!target.rowIds && !target.filter) {
+    // An omitted target would mean the whole table, which is never what a
+    // caller that forgot to pass one intended.
+    throw new NodeError('datatable_no_target', 'A write needs either a filter or row ids.');
+  }
+  if (target.rowIds?.length === 0) return [];
+
   const limit = scope === 'first' ? 1 : DATATABLE_WRITE_MAX_ROWS + 1;
+
+  // The grid addresses the exact row someone clicked, which no filter over the
+  // row's own data can express — two identical rows are still two rows.
+  const where = target.rowIds
+    ? Prisma.sql`"datatableId" = ${table.id} AND "id" IN (${Prisma.join(target.rowIds)})`
+    : filterSql(table.id, target.filter ?? EMPTY_FILTER);
+
   const rows = await prisma.$queryRaw<DatatableRow[]>`
     SELECT "id", "data", "createdAt", "updatedAt"
     FROM "DatatableRow"
-    WHERE ${filterSql(table.id, filter)}
+    WHERE ${where}
     ORDER BY "createdAt" ASC
     LIMIT ${limit}
   `;
@@ -223,6 +237,17 @@ async function matchedRows(
 // ---------------------------------------------------------------------------
 // Writing rows
 // ---------------------------------------------------------------------------
+
+/**
+ * Which rows a write is about.
+ *
+ * A filter for a node, which knows what it is looking for, or explicit ids for
+ * the grid, which knows exactly which row was clicked.
+ */
+export interface WriteTarget {
+  filter?: DatatableFilter;
+  rowIds?: string[];
+}
 
 export interface WriteOptions {
   source?: WriteSource | null;
@@ -267,13 +292,13 @@ export async function insertRows(
 export async function updateRows(
   input: {
     datatableId: string;
-    filter: DatatableFilter;
     set: Record<string, unknown>;
     scope?: 'first' | 'all';
-  } & WriteOptions,
+  } & WriteTarget &
+    WriteOptions,
 ): Promise<DatatableRow[]> {
   const table = await requireDatatable(input.datatableId);
-  const matched = await matchedRows(table, input.filter, input.scope ?? 'all');
+  const matched = await matchedRows(table, input, input.scope ?? 'all');
   if (matched.length === 0) return [];
 
   // Merged and coerced in here rather than with a `data || patch` in SQL, so the
@@ -306,10 +331,10 @@ export async function updateRows(
 }
 
 export async function deleteRows(
-  input: { datatableId: string; filter: DatatableFilter; scope?: 'first' | 'all' } & WriteOptions,
+  input: { datatableId: string; scope?: 'first' | 'all' } & WriteTarget & WriteOptions,
 ): Promise<DatatableRow[]> {
   const table = await requireDatatable(input.datatableId);
-  const matched = await matchedRows(table, input.filter, input.scope ?? 'all');
+  const matched = await matchedRows(table, input, input.scope ?? 'all');
   if (matched.length === 0) return [];
 
   await prisma.datatableRow.deleteMany({ where: { id: { in: matched.map((row) => row.id) } } });
