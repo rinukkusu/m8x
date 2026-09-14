@@ -3,6 +3,7 @@
 // client component.
 export { prisma } from './server/db.js';
 export * from './server/crypto.js';
+export * from './server/bootstrap.js';
 export * from './server/queue.js';
 export * from './server/folders.js';
 export * from './server/executions.js';
