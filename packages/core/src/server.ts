@@ -6,6 +6,7 @@ export * from './server/crypto.js';
 export * from './server/queue.js';
 export * from './server/folders.js';
 export * from './server/executions.js';
+export * from './server/pins.js';
 export * from './server/triggers.js';
 export * from './server/telegram-updates.js';
 export * from './server/telegram-poller.js';

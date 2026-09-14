@@ -21,6 +21,7 @@ import {
   finishExecution,
   restoredOutputsFor,
 } from './executions.js';
+import { pinnedOutputsFor } from './pins.js';
 import {
   QUEUE_EXECUTE,
   QUEUE_SCHEDULER_TICK,
@@ -173,7 +174,7 @@ async function runClaimedExecution(
     return null;
   }
 
-  const { seedItems, triggerNodeId, resumeFromNodeId } = readExecutionInput(execution.input);
+  const { seedItems, triggerNodeId, resumeFromNodeId, usePinnedData } = readExecutionInput(execution.input);
   const recorder = createExecutionRecorder(executionId);
 
   // A child runs under its parent's signal rather than starting a fresh hour of
@@ -193,6 +194,12 @@ async function runClaimedExecution(
         ? await restoredOutputsFor(execution.retryOfId)
         : undefined;
 
+    // Only for a run that asked. Nothing but the editor asks, so an activated
+    // workflow cannot reach a pin however stale or convincing it is.
+    const pinnedOutputs = usePinnedData
+      ? await pinnedOutputsFor(execution.workflowId, graph)
+      : undefined;
+
     const result = await runWorkflow({
       executionId,
       workflowId: execution.workflowId,
@@ -202,6 +209,7 @@ async function runClaimedExecution(
       triggerNodeId,
       resumeFromNodeId,
       restoredOutputs,
+      pinnedOutputs,
       signal: controller.signal,
       loadCredential: loadCredentialData,
       readBinary: getBinary,

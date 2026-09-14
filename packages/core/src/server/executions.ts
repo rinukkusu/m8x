@@ -6,6 +6,7 @@ import type { Graph, Item } from '../types.js';
 import type { RunEvent, RunResult } from '../runner/index.js';
 import { prisma } from './db.js';
 import { readExecutionInput, storedExecutionInput } from './execution-input.js';
+import { capturePayload } from './payload.js';
 import { enqueueExecution } from './queue.js';
 
 /**
@@ -15,12 +16,6 @@ import { enqueueExecution } from './queue.js';
  * in either one. The web app creates the row and enqueues; the worker consumes
  * the runner's events and writes them back.
  */
-
-// Payload caps. A node that returns a 40MB response should not turn into a
-// 40MB row, but the first slice of it is exactly what you want to see on the
-// failures page, so truncating beats dropping.
-const MAX_PAYLOAD_BYTES = 64_000;
-const MAX_ITEMS_STORED = 50;
 
 export interface CreateExecutionInput {
   workflowId: string;
@@ -35,6 +30,11 @@ export interface CreateExecutionInput {
   triggerNodeId?: string;
   /** Node a retry should pick up from, skipping everything before it. */
   resumeFromNodeId?: string;
+  /**
+   * Replay the workflow's pinned data. Set by the editor's Run button and by
+   * nothing else, which is what keeps a triggered run away from pinned data.
+   */
+  usePinnedData?: boolean;
   retryOfId?: string;
   /** Set when another workflow's Execute Workflow node started this run. */
   parentExecutionId?: string;
@@ -78,6 +78,7 @@ export async function createExecution(input: CreateExecutionInput): Promise<Crea
         seedItems: input.input ?? [],
         triggerNodeId: input.triggerNodeId,
         resumeFromNodeId: input.resumeFromNodeId,
+        usePinnedData: input.usePinnedData,
       }) as Prisma.InputJsonValue,
       retryOfId: input.retryOfId,
       parentExecutionId: input.parentExecutionId,
@@ -177,7 +178,7 @@ export function createExecutionRecorder(executionId: string) {
 
       if (event.type === 'nodeStart') {
         queue(async () => {
-          const captured = capture(event.input);
+          const captured = capturePayload(event.input);
           const row = await prisma.nodeRun.create({
             data: {
               executionId,
@@ -201,7 +202,7 @@ export function createExecutionRecorder(executionId: string) {
 
       queue(async () => {
         const existingId = nodeRunIds.get(runKey(event.nodeId, event.iteration, event.attempt));
-        const output = event.output ? capture(event.output) : { value: undefined, truncated: false };
+        const output = event.output ? capturePayload(event.output) : { value: undefined, truncated: false };
         const logs = logsByNode.get(event.nodeId);
 
         const data = {
@@ -375,52 +376,4 @@ export async function restoredOutputsFor(executionId: string): Promise<Record<st
   }
 
   return outputs;
-}
-
-// ---------------------------------------------------------------------------
-// Payload capture
-// ---------------------------------------------------------------------------
-
-interface Captured {
-  value: Prisma.InputJsonValue;
-  truncated: boolean;
-}
-
-function capture(items: Item[]): Captured {
-  const limited = items.slice(0, MAX_ITEMS_STORED);
-  let truncated = limited.length < items.length;
-
-  let serialised = safeStringify(limited);
-
-  if (serialised.length > MAX_PAYLOAD_BYTES) {
-    truncated = true;
-    // Halve until it fits rather than cutting the string, so what lands in the
-    // column is still valid JSON that the detail view can render.
-    let count = limited.length;
-    let candidate = limited;
-    while (count > 1 && serialised.length > MAX_PAYLOAD_BYTES) {
-      count = Math.floor(count / 2);
-      candidate = limited.slice(0, count);
-      serialised = safeStringify(candidate);
-    }
-    if (serialised.length > MAX_PAYLOAD_BYTES) {
-      return {
-        value: [{ json: { _truncated: true, preview: serialised.slice(0, 2000) } }] as unknown as Prisma.InputJsonValue,
-        truncated: true,
-      };
-    }
-    return { value: candidate as unknown as Prisma.InputJsonValue, truncated };
-  }
-
-  return { value: limited as unknown as Prisma.InputJsonValue, truncated };
-}
-
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value) ?? '[]';
-  } catch {
-    // Circular structures come out of Code nodes more often than you would
-    // think.
-    return '[{"json":{"_unserialisable":true}}]';
-  }
 }
