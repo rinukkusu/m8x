@@ -91,8 +91,9 @@ export interface ParamSchema {
   datatableSource?: boolean;
   /**
    * For type 'select': the options are the columns of the datatable chosen in
-   * the named sibling parameter. Falls back to free text, so an expression
-   * still works where a dropdown cannot.
+   * the named sibling parameter. Falls back to a text box while no table is
+   * chosen, and keeps a column that has since been removed selected rather than
+   * silently changing what the node matches.
    */
   datatableColumnsFrom?: string;
   /**

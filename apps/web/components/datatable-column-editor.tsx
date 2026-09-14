@@ -29,6 +29,9 @@ export function DatatableColumnEditor({
   const [draft, setDraft] = useState<DatatableColumn[]>(columns);
 
   const invalid = draft.find((column) => !isValidColumnKey(column.key));
+  // Two columns with one key is one column as far as storage is concerned: the
+  // second would be dropped on the next read and appear to have vanished.
+  const duplicate = draft.find((column, index) => draft.findIndex((other) => other.key === column.key) !== index);
 
   function update(index: number, patch: Partial<DatatableColumn>) {
     setDraft(draft.map((column, position) => (position === index ? { ...column, ...patch } : column)));
@@ -62,6 +65,14 @@ export function DatatableColumnEditor({
                 </option>
               ))}
             </Select>
+
+            <Input
+              value={column.default === undefined || column.default === null ? '' : String(column.default)}
+              placeholder="default"
+              title="Filled in when a write leaves this column out."
+              onChange={(event) => update(index, { default: event.target.value === '' ? undefined : event.target.value })}
+              className="w-28"
+            />
 
             <label className="flex cursor-pointer items-center gap-1.5 text-xs text-ink-muted">
               <input
@@ -109,10 +120,12 @@ export function DatatableColumnEditor({
           “{invalid.key || 'an empty key'}” is not a usable key: letters, digits and underscores, not starting with a
           digit.
         </p>
+      ) : duplicate ? (
+        <p className="text-xs text-bad">“{duplicate.key}” is used by two columns. Keys have to be unique.</p>
       ) : (
         <p className="text-xs text-ink-faint">
           Columns are metadata. Adding or removing one rewrites no rows, and a removed column leaves what it held
-          behind.
+          behind. A default is filled in whenever a write leaves the column out.
         </p>
       )}
 
@@ -120,7 +133,7 @@ export function DatatableColumnEditor({
         <Button
           variant="primary"
           size="sm"
-          disabled={pending || invalid !== undefined}
+          disabled={pending || invalid !== undefined || duplicate !== undefined}
           onClick={() => onSave(draft.map((column) => ({ ...column, name: column.name || column.key })))}
         >
           Save columns

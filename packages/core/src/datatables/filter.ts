@@ -33,16 +33,26 @@ export interface DatatableSort {
   direction: 'asc' | 'desc';
 }
 
-/** Defaults and ceilings for a read. A larger limit is clamped, not refused. */
+/** What a read returns when nothing asks for more. */
 export const DATATABLE_GET_DEFAULT_LIMIT = 50;
-export const DATATABLE_GET_MAX_LIMIT = 1000;
+
+/**
+ * The most rows one call may read or change.
+ *
+ * One ceiling for both, because they are the same problem: a change set becomes
+ * one execution carrying one item per row, so an unbounded write would build an
+ * execution input nobody can open. A read over it is clamped; a write over it
+ * fails, because truncating a change set would start a workflow that quietly
+ * missed half its work.
+ */
+export const DATATABLE_MAX_ROWS = 1000;
 
 export function clampLimit(requested: unknown): { limit: number; clamped: boolean } {
   const asked = Number(requested);
   if (!Number.isFinite(asked) || asked <= 0) {
     return { limit: DATATABLE_GET_DEFAULT_LIMIT, clamped: false };
   }
-  const limit = Math.min(Math.floor(asked), DATATABLE_GET_MAX_LIMIT);
+  const limit = Math.min(Math.floor(asked), DATATABLE_MAX_ROWS);
   return { limit, clamped: limit < Math.floor(asked) };
 }
 

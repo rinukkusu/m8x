@@ -22,7 +22,6 @@ export interface DatatableTriggerConfig {
   datatableId?: string;
   events?: unknown;
   watchColumns?: unknown;
-  perRow?: boolean;
   includeOwnWrites?: boolean;
 }
 
@@ -74,8 +73,14 @@ export function triggerWants(config: DatatableTriggerConfig, change: DatatableCh
  * switched the workflow off, and that is the mistake people actually make.
  */
 export async function dispatchDatatableChange(change: DatatableChangeSet): Promise<void> {
+  // Scoped in the query rather than in the loop: every write would otherwise
+  // load every datatable trigger in the installation to discard most of them.
   const triggers = await prisma.trigger.findMany({
-    where: { kind: 'datatable', enabled: true },
+    where: {
+      kind: 'datatable',
+      enabled: true,
+      config: { path: ['datatableId'], equals: change.datatableId },
+    },
   });
 
   for (const trigger of triggers) {
@@ -89,38 +94,28 @@ export async function dispatchDatatableChange(change: DatatableChangeSet): Promi
     // One change set is one execution carrying one item per row. The item model
     // is an array already, so a Loop Over Items node downstream gives per-row
     // handling to anyone who wants it without five hundred runs in the history.
-    const batches: Item[][] = config.perRow
-      ? rows.map((row) => [itemFor(change, row)])
-      : [rows.map((row) => itemFor(change, row))];
-
-    for (const input of batches) {
-      try {
-        await createExecution({
-          workflowId: trigger.workflowId,
-          trigger: 'datatable',
-          input,
-          triggerNodeId: trigger.nodeId,
-        });
-      } catch (error) {
-        // One workflow that cannot be queued must not stop the change reaching
-        // the others, and must never fail the write that caused it.
-        console.error(`[datatable] could not queue ${trigger.workflowId}`, error);
-      }
+    try {
+      await createExecution({
+        workflowId: trigger.workflowId,
+        trigger: 'datatable',
+        input: rows.map((row) => itemFor(change, row)),
+        triggerNodeId: trigger.nodeId,
+      });
+    } catch (error) {
+      // One workflow that cannot be queued must not stop the change reaching
+      // the others, and must never fail the write that caused it.
+      console.error(`[datatable] could not queue ${trigger.workflowId}`, error);
     }
   }
 }
-
-let registered = false;
 
 /**
  * Subscribe the dispatcher to the write path.
  *
  * Called by whichever process writes rows — the worker for a node, the web app
  * for the grid — because a change has to become executions wherever it happens.
- * Idempotent, so a module reloaded in development does not double every run.
+ * Setting the one handler slot, so calling it twice is calling it once.
  */
 export function startDatatableTriggers(): void {
-  if (registered) return;
-  registered = true;
   onDatatableChange(dispatchDatatableChange);
 }

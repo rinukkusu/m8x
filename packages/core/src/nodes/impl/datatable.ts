@@ -29,24 +29,32 @@ function requireTableId(ctx: NodeExecuteContext, itemIndex = 0): string {
   return id;
 }
 
+/** The key/value rows a `keyValue` parameter holds, as one object. */
+function fieldsOf(ctx: NodeExecuteContext, name: string, itemIndex: number): Record<string, unknown> {
+  const fields = ctx.getParam<unknown>(name, itemIndex);
+  const out: Record<string, unknown> = {};
+  if (!Array.isArray(fields)) return out;
+
+  for (const entry of fields) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { key, value } = entry as { key?: unknown; value?: unknown };
+    if (typeof key !== 'string' || key.trim() === '') continue;
+    // No dot notation, unlike Set: a key here is a column, and a column with a
+    // dot in it is not one the filter dropdown could ever offer.
+    out[key.trim()] = value;
+  }
+  return out;
+}
+
 /** The row a single item contributes: the whole item, or the mapped fields. */
 export function rowFromItem(ctx: NodeExecuteContext, itemIndex: number): Record<string, unknown> {
-  const mode = ctx.getParam<string>('mode', itemIndex) ?? 'item';
-  if (mode !== 'fields') return { ...(ctx.items[itemIndex]?.json ?? {}) };
+  if (ctx.getParam<string>('mode', itemIndex) === 'fields') return fieldsOf(ctx, 'fields', itemIndex);
 
-  const fields = ctx.getParam<unknown>('fields', itemIndex);
-  const row: Record<string, unknown> = {};
-  if (Array.isArray(fields)) {
-    for (const entry of fields) {
-      if (!entry || typeof entry !== 'object') continue;
-      const { key, value } = entry as { key?: unknown; value?: unknown };
-      if (typeof key !== 'string' || key.trim() === '') continue;
-      // No dot notation, unlike Set: a key here is a column, and a column with
-      // a dot in it is not one the filter dropdown could ever offer.
-      row[key.trim()] = value;
-    }
-  }
-  return row;
+  // `$rowId` is this node family's own envelope, added on the way out. Letting
+  // it back in would make Get → Insert store a column nobody declared and
+  // nobody meant.
+  const { $rowId: _ignored, ...json } = ctx.items[itemIndex]?.json ?? {};
+  return json;
 }
 
 /** The filter, resolved per item so each item can match different rows. */
@@ -54,6 +62,24 @@ export function filterFor(ctx: NodeExecuteContext, itemIndex: number): Datatable
   return parseFilter(
     ctx.getParam<unknown>('filter', itemIndex),
     ctx.getParam<string>('filterCombinator', itemIndex),
+  );
+}
+
+/**
+ * The filter, refusing to run unarmed.
+ *
+ * An empty filter matches the whole table. Rewriting or removing every row in it
+ * is a thing someone might mean, and never a thing they should get by leaving a
+ * field blank, so both destructive actions ask for the checkbox first.
+ */
+function requireFilter(ctx: NodeExecuteContext, itemIndex: number, verb: string): DatatableFilter {
+  const filter = filterFor(ctx, itemIndex);
+  if (filter.conditions.length > 0 || ctx.getParam<boolean>('allowEmptyFilter', itemIndex) === true) {
+    return filter;
+  }
+  throw new NodeError(
+    'ConfigurationError',
+    `No filter: this would ${verb} every row in the datatable. Add a condition, or switch on "Without a filter, ${verb} every row".`,
   );
 }
 
@@ -70,14 +96,36 @@ function eachItem(ctx: NodeExecuteContext): number[] {
   return Array.from({ length: count }, (_, index) => index);
 }
 
+/**
+ * Group the items by the table they are going to.
+ *
+ * Every parameter here is an expression, so `datatableId` can differ per item —
+ * but it almost never does, and one call per group is what makes a hundred
+ * inserted items one change set, and so one run of whatever watches the table,
+ * rather than a hundred.
+ */
+function byDatatable(
+  ctx: NodeExecuteContext,
+  row: (index: number) => Record<string, unknown>,
+): Array<{ datatableId: string; rows: Array<Record<string, unknown>> }> {
+  const groups: Array<{ datatableId: string; rows: Array<Record<string, unknown>> }> = [];
+
+  for (const index of eachItem(ctx)) {
+    const datatableId = requireTableId(ctx, index);
+    // Appended to the last group rather than to a map, so items keep the order
+    // they arrived in and the stored rows come back in that order too.
+    const group = groups.at(-1);
+    if (group?.datatableId === datatableId) group.rows.push(row(index));
+    else groups.push({ datatableId, rows: [row(index)] });
+  }
+
+  return groups;
+}
+
 export const executeDatatableInsert: NodeExecute = async (ctx) => {
   const out: Item[] = [];
-  for (const index of eachItem(ctx)) {
-    const stored = await insertRows({
-      datatableId: requireTableId(ctx, index),
-      rows: [rowFromItem(ctx, index)],
-      source: sourceOf(ctx),
-    });
+  for (const group of byDatatable(ctx, (index) => rowFromItem(ctx, index))) {
+    const stored = await insertRows({ ...group, source: sourceOf(ctx) });
     out.push(...asItems(stored));
   }
   return [out];
@@ -108,10 +156,12 @@ export const executeDatatableGet: NodeExecute = async (ctx) => {
 export const executeDatatableUpdate: NodeExecute = async (ctx) => {
   const out: Item[] = [];
   for (const index of eachItem(ctx)) {
+    const filter = requireFilter(ctx, index, 'update');
+
     const stored = await updateRows({
       datatableId: requireTableId(ctx, index),
-      filter: filterFor(ctx, index),
-      set: rowFromItemFields(ctx, index),
+      filter,
+      set: setFields(ctx, index),
       scope: ctx.getParam<string>('scope', index) === 'first' ? 'first' : 'all',
       source: sourceOf(ctx),
     });
@@ -123,15 +173,7 @@ export const executeDatatableUpdate: NodeExecute = async (ctx) => {
 export const executeDatatableDelete: NodeExecute = async (ctx) => {
   const out: Item[] = [];
   for (const index of eachItem(ctx)) {
-    const filter = filterFor(ctx, index);
-    if (filter.conditions.length === 0 && ctx.getParam<boolean>('allowEmptyFilter', index) !== true) {
-      // An empty filter matches the whole table. Deleting it is a thing someone
-      // might mean, and never a thing they should do by leaving a field blank.
-      throw new NodeError(
-        'ConfigurationError',
-        'This would delete every row in the datatable. Add a filter, or switch on "Allow deleting every row".',
-      );
-    }
+    const filter = requireFilter(ctx, index, 'delete');
 
     const deleted = await deleteRows({
       datatableId: requireTableId(ctx, index),
@@ -146,35 +188,24 @@ export const executeDatatableDelete: NodeExecute = async (ctx) => {
 
 export const executeDatatableUpsert: NodeExecute = async (ctx) => {
   const out: Item[] = [];
-  for (const index of eachItem(ctx)) {
-    const matchOn = asColumnList(ctx.getParam<unknown>('matchOn', index));
+
+  // Grouped like insert, so a run that upserts a hundred items announces two
+  // change sets — the inserts and the updates — instead of two hundred.
+  for (const group of byDatatable(ctx, (index) => rowFromItem(ctx, index))) {
+    const matchOn = asColumnList(ctx.getParam<unknown>('matchOn'));
     if (matchOn.length === 0) {
       throw new NodeError('ConfigurationError', 'Choose at least one column to match on.');
     }
 
-    const result = await upsertRows({
-      datatableId: requireTableId(ctx, index),
-      matchOn,
-      rows: [rowFromItem(ctx, index)],
-      source: sourceOf(ctx),
-    });
+    const result = await upsertRows({ ...group, matchOn, source: sourceOf(ctx) });
     out.push(...asItems(result.rows));
   }
   return [out];
 };
 
 /** The `set` half of an update: mapped fields only, never the whole item. */
-function rowFromItemFields(ctx: NodeExecuteContext, itemIndex: number): Record<string, unknown> {
-  const fields = ctx.getParam<unknown>('fields', itemIndex);
-  const set: Record<string, unknown> = {};
-  if (Array.isArray(fields)) {
-    for (const entry of fields) {
-      if (!entry || typeof entry !== 'object') continue;
-      const { key, value } = entry as { key?: unknown; value?: unknown };
-      if (typeof key !== 'string' || key.trim() === '') continue;
-      set[key.trim()] = value;
-    }
-  }
+function setFields(ctx: NodeExecuteContext, itemIndex: number): Record<string, unknown> {
+  const set = fieldsOf(ctx, 'fields', itemIndex);
   if (Object.keys(set).length === 0) {
     throw new NodeError('ConfigurationError', 'Nothing to set: add at least one field.');
   }

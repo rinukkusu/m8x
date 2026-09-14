@@ -51,6 +51,10 @@ export function DatatableView({
   const [editingColumns, setEditingColumns] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [silent, setSilent] = useState(false);
+  // A draft row rather than an immediate empty insert: a table with a required
+  // column has no valid empty row, so writing one first and asking afterwards
+  // could only ever fail.
+  const [draft, setDraft] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function run(action: () => Promise<{ ok: boolean; error?: string }>) {
@@ -58,7 +62,10 @@ export function DatatableView({
     startTransition(async () => {
       const result = await action();
       if (!result.ok) setError(result.error ?? 'That did not work.');
-      else router.refresh();
+      else {
+        setDraft(null);
+        router.refresh();
+      }
     });
   }
 
@@ -95,8 +102,8 @@ export function DatatableView({
             <Button
               size="sm"
               variant="primary"
-              disabled={pending || table.columns.length === 0}
-              onClick={() => run(() => insertRowAction(table.id, {}, silent))}
+              disabled={pending || table.columns.length === 0 || draft !== null}
+              onClick={() => setDraft({})}
             >
               <Plus className="size-3.5" />
               Add row
@@ -132,10 +139,16 @@ export function DatatableView({
               </Button>
             }
           />
-        ) : rows.length === 0 ? (
+        ) : rows.length === 0 && draft === null ? (
           <EmptyState
             title="No rows yet"
             description="Add one here, or let a workflow write the first."
+            action={
+              <Button variant="primary" size="sm" onClick={() => setDraft({})} disabled={draft !== null}>
+                <Plus className="size-3.5" />
+                Add row
+              </Button>
+            }
           />
         ) : (
           <div className="overflow-x-auto rounded-lg border border-line">
@@ -153,6 +166,37 @@ export function DatatableView({
                 </tr>
               </thead>
               <tbody>
+                {draft ? (
+                  <tr className="border-b border-line bg-surface-2/50">
+                    {table.columns.map((column) => (
+                      <td key={column.key} className="px-1.5 py-1">
+                        <Input
+                          value={draft[column.key] ?? ''}
+                          disabled={pending}
+                          placeholder={column.required ? `${column.name} (required)` : column.name}
+                          onChange={(event) => setDraft({ ...draft, [column.key]: event.target.value })}
+                          className="min-w-32"
+                        />
+                      </td>
+                    ))}
+                    <td colSpan={2} className="whitespace-nowrap px-1.5 py-1">
+                      <span className="flex gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          disabled={pending}
+                          onClick={() => run(() => insertRowAction(table.id, draft, silent))}
+                        >
+                          Save
+                        </Button>
+                        <Button size="sm" disabled={pending} onClick={() => setDraft(null)}>
+                          Cancel
+                        </Button>
+                      </span>
+                    </td>
+                  </tr>
+                ) : null}
+
                 {rows.map((row) => (
                   <tr key={row.id} className="border-b border-line last:border-0">
                     {table.columns.map((column) => (

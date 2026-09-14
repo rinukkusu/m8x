@@ -10,6 +10,8 @@ const columns = parseColumns([
   { key: 'total', name: 'Total', type: 'number' },
   { key: 'active', name: 'Active', type: 'boolean' },
   { key: 'seenAt', name: 'Seen at', type: 'datetime' },
+  { key: 'note', name: 'Note', type: 'string' },
+  { key: 'tier', name: 'Tier', type: 'string', default: 'free' },
 ]);
 
 test('declared columns are coerced, so a filter compares like with like', () => {
@@ -58,4 +60,20 @@ test('metadata from a newer m8x is dropped rather than breaking the page', () =>
     parsed.map((column) => `${column.key}:${column.type}`),
     ['ok:string', 'odd:string'],
   );
+});
+
+test('an empty text value is stored, because "" is a thing someone can mean', () => {
+  const row = coerceRow(columns, { email: 'a@b.c', note: '' });
+  assert.equal(row.note, '');
+});
+
+test('an empty number stays absent rather than becoming zero', () => {
+  const row = coerceRow(columns, { email: 'a@b.c', total: '' });
+  assert.equal('total' in row, false);
+});
+
+test('a default fills in for a column the write left out', () => {
+  const row = coerceRow(columns, { email: 'a@b.c' });
+  assert.equal(row.tier, 'free');
+  assert.equal(coerceRow(columns, { email: 'a@b.c', tier: 'paid' }).tier, 'paid');
 });

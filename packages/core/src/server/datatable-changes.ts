@@ -44,11 +44,15 @@ export interface DatatableChangeSet {
 
 export type DatatableChangeHandler = (change: DatatableChangeSet) => Promise<void> | void;
 
-const handlers = new Set<DatatableChangeHandler>();
+/**
+ * Who hears a write. One slot, not a list: the dispatcher in
+ * `datatable-triggers.ts` is the only thing that has ever wanted to listen, and
+ * a registry for a single subscriber is machinery pretending to be a feature.
+ */
+let handler: DatatableChangeHandler | null = null;
 
-export function onDatatableChange(handler: DatatableChangeHandler): () => void {
-  handlers.add(handler);
-  return () => handlers.delete(handler);
+export function onDatatableChange(next: DatatableChangeHandler | null): void {
+  handler = next;
 }
 
 /**
@@ -60,13 +64,11 @@ export function onDatatableChange(handler: DatatableChangeHandler): () => void {
  * to start must not undo the write that caused it.
  */
 export async function publishDatatableChange(change: DatatableChangeSet): Promise<void> {
-  if (change.silent || change.rows.length === 0) return;
+  if (!handler || change.silent || change.rows.length === 0) return;
 
-  for (const handler of handlers) {
-    try {
-      await handler(change);
-    } catch (error) {
-      console.error('[datatable] change handler failed', error);
-    }
+  try {
+    await handler(change);
+  } catch (error) {
+    console.error('[datatable] change handler failed', error);
   }
 }

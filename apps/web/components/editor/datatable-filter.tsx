@@ -1,6 +1,6 @@
 'use client';
 
-import { COMPARISON_OPERATORS, type DatatableColumn } from '@m8x/core';
+import { COMPARISON_OPERATORS, UNARY_OPERATORS, type DatatableColumn } from '@m8x/core';
 import { Plus, X } from 'lucide-react';
 
 import { Button, Input, Select } from '../ui';
@@ -21,7 +21,7 @@ interface FilterRow {
 }
 
 /** Operators that compare against nothing, so the value box would be a lie. */
-const UNARY = new Set(['isEmpty', 'isNotEmpty', 'isTrue', 'isFalse']);
+const UNARY = new Set<string>(UNARY_OPERATORS);
 
 export function DatatableFilterEditor({
   label,

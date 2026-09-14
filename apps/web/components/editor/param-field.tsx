@@ -77,17 +77,35 @@ export function ParamField({
 
   if (schema.datatableColumnsFrom) {
     const columns = columnsOf(datatables, siblings[schema.datatableColumnsFrom]);
-    return schema.multiple ? (
-      <ColumnChecklist schema={schema} columns={columns} value={value} onChange={onChange} />
-    ) : (
+    if (schema.multiple) {
+      return <ColumnChecklist schema={schema} columns={columns} value={value} onChange={onChange} />;
+    }
+
+    const chosen = String(value ?? '');
+    // No table picked yet, or a table with no columns: a dropdown of nothing is
+    // a dead end, so fall back to typing the key, the way the filter rows do.
+    if (columns.length === 0) {
+      return (
+        <Field label={schema.displayName} hint={schema.description}>
+          <Input value={chosen} placeholder="column" onChange={(event) => onChange(event.target.value)} />
+        </Field>
+      );
+    }
+
+    return (
       <Field label={schema.displayName} hint={schema.description}>
-        <Select value={String(value ?? '')} onChange={(event) => onChange(event.target.value)}>
+        <Select value={chosen} onChange={(event) => onChange(event.target.value)}>
           <option value="">None</option>
           {columns.map((column) => (
             <option key={column.key} value={column.key}>
               {column.name}
             </option>
           ))}
+          {/* A column that has since been removed stays selected rather than
+              silently becoming None and changing what the node does. */}
+          {chosen && !columns.some((column) => column.key === chosen) ? (
+            <option value={chosen}>{chosen} (gone)</option>
+          ) : null}
         </Select>
       </Field>
     );

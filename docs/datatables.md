@@ -75,6 +75,10 @@ stored as `42`. A required column that is missing, or a value that cannot be
 coerced, fails the node with a `NodeError`. Keys that are not declared columns
 are stored as they arrive.
 
+An empty value means "absent" for every type but text: clearing a number cell
+cannot store `0` by accident, while `""` in a text column is a value someone can
+mean, so it is stored. A required column is still required either way.
+
 Coercing is what keeps typed filters honest: `gt` on a number column has to be
 comparing numbers, or `"9" > "42"` is true. Keeping undeclared keys is what
 stops a workflow dying the day an upstream API adds a field. Rejecting unknown
@@ -94,11 +98,13 @@ goes through it: the nodes, the grid, any import.
 - **Rows per table are unbounded**, with a warning in the UI past about 100k
   rows. A hard ceiling would turn one legitimate large table into a support
   question; the row cap and the read cap are what actually protect the process.
-- **One node call changes at most 1000 rows**, the same ceiling as a read, and
-  for the same reason: a change set becomes one execution carrying one item per
-  row, so an unbounded update would build an execution input nobody can open.
-  Over that, the node fails and names the count. Truncating the change set
-  instead would start a workflow that quietly missed half its work.
+- **One node call changes at most 1000 rows** — `DATATABLE_MAX_ROWS`, the same
+  ceiling as a read and for the same reason: a change set becomes one execution
+  carrying one item per row, so an unbounded write would build an execution input
+  nobody can open. It binds an insert of 1000 items exactly as it binds an update
+  matching 1000 rows. Over that, the node fails and names the count. Truncating
+  the change set instead would start a workflow that quietly missed half its
+  work.
 
 ## Writing
 
@@ -137,9 +143,11 @@ serialise instead of both inserting.
 
 This is deliberately weaker than it looks, and the node description says so: two
 different nodes keying the same table on different columns can still each insert
-what the other would have matched. A column declared `unique` is checked on
-insert as a backstop, but the primary defence is that the match key is a choice
-the workflow author makes once and does not vary.
+what the other would have matched. A column declared `unique` is checked as a
+backstop on every path that can create a duplicate — insert, update and upsert —
+so the checkbox means the same thing wherever a row comes from; a row is allowed
+to keep the value it already has. The primary defence is still that the match key
+is a choice the workflow author makes once and does not vary.
 
 Per-table unique indexes would be stronger. They would also mean generating
 expression indexes at runtime, which is the DDL problem again.
@@ -161,6 +169,13 @@ Each references its table by id, the way a credential is referenced: the
 dropdown shows the name, the graph stores the cuid, and renaming a table breaks
 nothing.
 
+Every row these nodes emit carries `$rowId` beside its data, so a column called
+`id` stays the author's own and a later update can address the row it came from.
+It is the node family's own envelope, so it is stripped again on the way in: a
+Get feeding an Insert stores the row, not the id of the row it was copied from.
+The trigger's items are a different shape — `{ event, rowId, row, previous }` —
+because there the row is one field of an envelope rather than the item itself.
+
 Delete is a hard delete. The rows are gone, but the node returns them and the
 change set carries them as `previous`, so a workflow can still react to what was
 removed. A soft delete would put `deletedAt is null` into every read, grow the
@@ -175,7 +190,15 @@ by If, Filter and Switch. Rows of `{ field, operator, value }` reusing
 `COMPARISON_OPERATORS`, plus a combinator (all / any).
 
 `field` is a dropdown of the selected table's columns, and falls back to free
-text so an expression still works.
+text while no table is picked. A filter **value** is expression-resolved
+(`expression: true` on the parameter, which `resolveValue` carries into the
+array), because matching rows against the item in hand is most of what a filter
+on an action node is for: `{{ $json.email }}` has to be the email.
+
+An empty filter matches every row, so **update and delete both refuse to run
+with one** unless "Without a filter, update/delete every row" is switched on.
+Rewriting a whole table is a thing someone might mean, and never a thing they
+should get by leaving a field blank.
 
 ### Dropdowns the descriptor cannot fill
 
@@ -206,8 +229,15 @@ combination), and optionally only when one of a named set of columns changed.
 **One change set becomes one execution, with one item per changed row.** A
 workflow inserting 500 rows produces one run holding 500 items, not 500 runs.
 The item model is an array already; a Loop Over Items node downstream gets
-per-row handling for anyone who wants it. A checkbox switches to one execution
-per row where isolation genuinely matters.
+per-row handling for anyone who wants it.
+
+That is a promise about the *write*, not only about the dispatcher, so Insert
+and Upsert group their items by table and write once per group rather than once
+per item. Get, update and delete stay per item, because each item resolves its
+own filter and they are genuinely different questions.
+
+There is no "one execution per row" switch. It would only be a slower spelling
+of Loop Over Items, and nobody has asked for the isolation.
 
 Each item is:
 
@@ -246,6 +276,11 @@ a paged grid with inline editing.
 The grid is not optional. A table nobody can look at or correct by hand is a
 worse Code node — the reason to have this at all is that you can see the state
 your workflows are keeping, and fix it when it is wrong.
+
+Adding a row opens a draft row rather than inserting an empty one: a table with
+a required column has no valid empty row, so writing first and asking afterwards
+could only ever fail. The column editor is where `required`, `unique` and
+`default` are set.
 
 Grid edits go through the same write function, so they fire triggers exactly
 like a node's writes do. That is what makes a datatable trigger testable: change

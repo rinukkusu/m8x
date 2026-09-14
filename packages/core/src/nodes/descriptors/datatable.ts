@@ -39,7 +39,11 @@ export const datatableFilterParams: ParamSchema[] = [
     type: 'json',
     default: [],
     datatableFilterFrom: 'datatableId',
-    description: `Rows of column, operator and value. Operators: ${COMPARISON_OPERATORS.map((entry) => entry.label).join(', ')}.`,
+    // The whole point of a filter on an action node is matching rows against the
+    // item in hand, so `{{ $json.email }}` in a value has to resolve. Templates
+    // are found inside the array, because `resolveValue` walks it.
+    expression: true,
+    description: `Rows of column, operator and value. A value may be an expression. Operators: ${COMPARISON_OPERATORS.map((entry) => entry.label).join(', ')}.`,
   },
   {
     name: 'filterCombinator',
@@ -77,6 +81,21 @@ const rowSourceParams: ParamSchema[] = [
     showIf: { mode: ['fields'] },
   },
 ];
+
+/**
+ * The guard on a blank filter, shared by update and delete.
+ *
+ * No filter means every row. Both nodes refuse to run that way unless this is
+ * on — an accident here rewrites or removes the whole table.
+ */
+const allowEmptyFilterParam = (verb: string): ParamSchema => ({
+  name: 'allowEmptyFilter',
+  displayName: `Without a filter, ${verb} every row`,
+  type: 'boolean',
+  default: false,
+  description: `An empty filter matches the whole table. This node refuses to ${verb} with one unless this is on.`,
+  expression: false,
+});
 
 const scopeParam: ParamSchema = {
   name: 'scope',
@@ -167,6 +186,7 @@ export const datatableUpdate: NodeDescriptor = {
       valuePlaceholder: '{{ $json.status }}',
       description: 'Fields left out keep the value they already had.',
     },
+    allowEmptyFilterParam('update'),
   ],
 };
 
@@ -183,15 +203,7 @@ export const datatableDelete: NodeDescriptor = {
     datatableId,
     ...datatableFilterParams,
     scopeParam,
-    {
-      name: 'allowEmptyFilter',
-      displayName: 'Allow deleting every row',
-      type: 'boolean',
-      default: false,
-      description:
-        'An empty filter matches the whole table. This node refuses to run with one unless this is on.',
-      expression: false,
-    },
+    allowEmptyFilterParam('delete'),
   ],
 };
 
@@ -252,15 +264,6 @@ export const datatableTrigger: NodeDescriptor = {
       multiple: true,
       datatableColumnsFrom: 'datatableId',
       description: 'Applies to updates. Leave empty to run on any change.',
-      expression: false,
-    },
-    {
-      name: 'perRow',
-      displayName: 'One execution per row',
-      type: 'boolean',
-      default: false,
-      description:
-        'Off, a change of five hundred rows is one run holding five hundred items. On, it is five hundred runs.',
       expression: false,
     },
     {

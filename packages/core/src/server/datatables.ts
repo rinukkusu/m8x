@@ -7,8 +7,9 @@ import {
   type DatatableColumn,
 } from '../datatables/columns.js';
 import {
-  DATATABLE_GET_MAX_LIMIT,
+  DATATABLE_MAX_ROWS,
   EMPTY_FILTER,
+  clampLimit,
   type DatatableFilter,
   type DatatableSort,
 } from '../datatables/filter.js';
@@ -46,16 +47,6 @@ export interface DatatableRow {
   createdAt: Date;
   updatedAt: Date;
 }
-
-/**
- * How many rows one call may change.
- *
- * The same ceiling as a read, and for the same reason: a change set becomes one
- * execution carrying one item per row, so an unbounded update would build an
- * execution input nobody can open. Failing with the count beats truncating the
- * change set, which would start a workflow that quietly missed half its work.
- */
-export const DATATABLE_WRITE_MAX_ROWS = DATATABLE_GET_MAX_LIMIT;
 
 // ---------------------------------------------------------------------------
 // Tables
@@ -170,7 +161,9 @@ export async function getRows(input: GetRowsInput): Promise<DatatableRow[]> {
   const table = await requireDatatable(input.datatableId);
   const where = filterSql(table.id, input.filter ?? EMPTY_FILTER);
   const order = orderSql(table.columns, input.sort ?? null);
-  const limit = Math.min(input.limit ?? DATATABLE_GET_MAX_LIMIT, DATATABLE_GET_MAX_LIMIT);
+  // One clamp, shared with the node's, so a caller cannot ask for 0 rows or a
+  // negative page by passing the number straight through to LIMIT.
+  const { limit } = clampLimit(input.limit ?? DATATABLE_MAX_ROWS);
 
   return prisma.$queryRaw<DatatableRow[]>`
     SELECT "id", "data", "createdAt", "updatedAt"
@@ -207,7 +200,7 @@ async function matchedRows(
   }
   if (target.rowIds?.length === 0) return [];
 
-  const limit = scope === 'first' ? 1 : DATATABLE_WRITE_MAX_ROWS + 1;
+  const limit = scope === 'first' ? 1 : DATATABLE_MAX_ROWS + 1;
 
   // The grid addresses the exact row someone clicked, which no filter over the
   // row's own data can express — two identical rows are still two rows.
@@ -223,11 +216,11 @@ async function matchedRows(
     LIMIT ${limit}
   `;
 
-  if (rows.length > DATATABLE_WRITE_MAX_ROWS) {
+  if (rows.length > DATATABLE_MAX_ROWS) {
     throw new NodeError(
       'datatable_too_many_rows',
-      `That matches more than ${DATATABLE_WRITE_MAX_ROWS} rows. Narrow the filter, or do it in the datatable view.`,
-      { datatableId: table.id, limit: DATATABLE_WRITE_MAX_ROWS },
+      `That matches more than ${DATATABLE_MAX_ROWS} rows. Narrow the filter, or do it in the datatable view.`,
+      { datatableId: table.id, limit: DATATABLE_MAX_ROWS },
     );
   }
 
@@ -274,10 +267,21 @@ export async function insertRows(
   input: { datatableId: string; rows: Array<Record<string, unknown>> } & WriteOptions,
 ): Promise<DatatableRow[]> {
   const table = await requireDatatable(input.datatableId);
+  if (input.rows.length > DATATABLE_MAX_ROWS) {
+    // The same ceiling the other writes have, and now for the same reason: one
+    // call is one change set, so an unbounded insert would build an execution
+    // input nobody can open.
+    throw new NodeError(
+      'datatable_too_many_rows',
+      `That is more than ${DATATABLE_MAX_ROWS} rows in one call. Split the items first.`,
+      { datatableId: table.id, limit: DATATABLE_MAX_ROWS },
+    );
+  }
+
   const rows = input.rows.map((row) => coerceRow(table.columns, row));
   if (rows.length === 0) return [];
 
-  await assertUnique(table, rows);
+  await assertUnique(prisma, table, rows);
 
   const created = await prisma.datatableRow.createManyAndReturn({
     data: rows.map((data) => ({ datatableId: table.id, data: data as never })),
@@ -309,6 +313,15 @@ export async function updateRows(
     row,
     data: coerceRow(table.columns, { ...row.data, ...input.set }),
   }));
+
+  // A row is allowed to keep the unique value it already has, so the rows being
+  // rewritten are excluded from their own check.
+  await assertUnique(
+    prisma,
+    table,
+    next.map((entry) => entry.data),
+    next.map((entry) => entry.row.id),
+  );
 
   const updated = await prisma.$transaction(
     next.map((entry) =>
@@ -418,6 +431,7 @@ export async function upsertRows(
       `;
 
       if (!existing) {
+        await assertUnique(tx, table, [data]);
         const created = await tx.datatableRow.create({
           data: { datatableId: table.id, data: data as never },
           select: { id: true, data: true, createdAt: true, updatedAt: true },
@@ -426,6 +440,7 @@ export async function upsertRows(
       }
 
       const merged = coerceRow(table.columns, { ...existing.data, ...data });
+      await assertUnique(tx, table, [merged], [existing.id]);
       const updated = await tx.datatableRow.update({
         where: { id: existing.id },
         data: { data: merged as never },
@@ -454,34 +469,50 @@ export async function upsertRows(
  * The backstop behind a column declared unique.
  *
  * Not a constraint: enforcing it in the database would mean an expression index
- * per column per table, generated at runtime. This catches the duplicate an
- * insert would create, both against what is stored and within the batch itself.
+ * per column per table, generated at runtime. This catches the duplicate a write
+ * would create, both against what is stored and within the batch itself, and it
+ * runs on every path that can create one — insert, update and upsert alike, so
+ * the checkbox means the same thing wherever a row comes from.
+ *
+ * `exclude` is the rows being rewritten: a row is allowed to keep the value it
+ * already has.
  */
-async function assertUnique(table: Datatable, rows: Array<Record<string, unknown>>): Promise<void> {
+async function assertUnique(
+  client: Prisma.TransactionClient | typeof prisma,
+  table: Datatable,
+  rows: Array<Record<string, unknown>>,
+  exclude: string[] = [],
+): Promise<void> {
   const unique = table.columns.filter((column) => column.unique);
   if (unique.length === 0) return;
 
   for (const column of unique) {
-    const values = rows
+    const texts = rows
       .map((row) => row[column.key])
-      .filter((value): value is NonNullable<unknown> => value !== undefined && value !== null);
-    if (values.length === 0) continue;
+      .filter((value) => value !== undefined && value !== null)
+      .map((value) => (typeof value === 'object' ? JSON.stringify(value) : String(value)));
+    if (texts.length === 0) continue;
 
-    const texts = values.map((value) => (typeof value === 'object' ? JSON.stringify(value) : String(value)));
     const duplicate = texts.find((text, index) => texts.indexOf(text) !== index);
     if (duplicate !== undefined) {
       throw new NodeError(
         'datatable_duplicate',
-        `Column "${column.name}" is unique, and "${duplicate}" appears twice in what is being inserted.`,
+        `Column "${column.name}" is unique, and "${duplicate}" appears twice in what is being written.`,
         { column: column.key },
       );
     }
 
-    const [clash] = await prisma.$queryRaw<Array<{ value: string }>>`
+    const others =
+      exclude.length > 0
+        ? Prisma.sql`AND "id" NOT IN (${Prisma.join(exclude)})`
+        : Prisma.empty;
+
+    const [clash] = await client.$queryRaw<Array<{ value: string }>>`
       SELECT jsonb_extract_path_text("data", ${column.key}) AS value
       FROM "DatatableRow"
       WHERE "datatableId" = ${table.id}
         AND jsonb_extract_path_text("data", ${column.key}) IN (${Prisma.join(texts)})
+        ${others}
       LIMIT 1
     `;
     if (clash) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { DATATABLE_GET_MAX_LIMIT, clampLimit, parseFilter } from './filter.js';
+import { DATATABLE_MAX_ROWS, clampLimit, parseFilter } from './filter.js';
 
 /** Reading a filter back out of what the inspector stored. */
 
@@ -19,7 +19,7 @@ test('an unknown operator falls back to equality', () => {
 });
 
 test('a read limit is clamped rather than refused, and says so', () => {
-  assert.deepEqual(clampLimit(5000), { limit: DATATABLE_GET_MAX_LIMIT, clamped: true });
+  assert.deepEqual(clampLimit(5000), { limit: DATATABLE_MAX_ROWS, clamped: true });
   assert.deepEqual(clampLimit(10), { limit: 10, clamped: false });
   assert.deepEqual(clampLimit(undefined), { limit: 50, clamped: false });
 });

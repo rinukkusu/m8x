@@ -103,7 +103,12 @@ export function coerceRow(
     const present = Object.prototype.hasOwnProperty.call(row, column.key);
     const raw = present ? row[column.key] : column.default;
 
-    if (raw === undefined || raw === null || raw === '') {
+    // Empty means absent for every type but text, where "" is a value someone
+    // can mean: clearing a text cell in the grid stores an empty string, while
+    // clearing a number cell cannot store 0 by accident.
+    const empty = raw === undefined || raw === null || (raw === '' && column.type !== 'string');
+
+    if (empty || (raw === '' && column.required)) {
       if (column.required) {
         throw new NodeError(
           'datatable_column_required',
