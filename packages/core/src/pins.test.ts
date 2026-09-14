@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { pinRefusal } from './pins.js';
+import { pinRefusal, resumeRefusal } from './pins.js';
 import { capturePinnedOutput, MAX_ITEMS_STORED } from './server/payload.js';
 import { edge, node } from './test-support.js';
 import type { Graph, Item } from './types.js';
@@ -82,4 +82,65 @@ test('a single item too large to store leaves nothing behind', () => {
 
   assert.equal(captured.truncated, true);
   assert.deepEqual(captured.branches, [[]]);
+});
+
+// ---------------------------------------------------------------------------
+// Where a run may start
+// ---------------------------------------------------------------------------
+
+const pinned = (...ids: string[]) => new Set(ids);
+
+/** trigger -> a -> b, so "b" has one node to cover and "a" has one above it. */
+function chain(): Graph {
+  return {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('a', 'action.set', { assignments: [] }, 0, 100),
+      node('b', 'action.set', { assignments: [] }, 0, 200),
+    ],
+    edges: [edge('trigger', 'a'), edge('a', 'b')],
+  };
+}
+
+test('a run may start at a node whose input is pinned', () => {
+  assert.equal(resumeRefusal(chain(), 'b', pinned('a')), null);
+});
+
+test('a run may not start at a node fed by something unpinned', () => {
+  const refusal = resumeRefusal(chain(), 'b', pinned('trigger'));
+  assert.ok(refusal);
+  // Named, so the fix is the next click rather than a hunt.
+  assert.match(refusal, /\ba\b/);
+});
+
+test('a node with nothing above it is refused, because that is just Run', () => {
+  const refusal = resumeRefusal(chain(), 'trigger', pinned());
+  assert.ok(refusal);
+  assert.match(refusal, /from the top/);
+});
+
+test('a run may not start inside a loop, however well pinned', () => {
+  const refusal = resumeRefusal(loopGraph(), 'body', pinned('loop', 'trigger'));
+  assert.ok(refusal);
+  assert.match(refusal, /pass/);
+});
+
+test('every feeding node is checked, not only the first', () => {
+  const graph: Graph = {
+    nodes: [
+      node('trigger', 'trigger.manual'),
+      node('left', 'action.set', { assignments: [] }, 0, 100),
+      node('right', 'action.set', { assignments: [] }, 200, 100),
+      node('merge', 'flow.merge', {}, 0, 200),
+    ],
+    edges: [
+      edge('trigger', 'left'),
+      edge('trigger', 'right'),
+      edge('left', 'merge', 0, 0),
+      edge('right', 'merge', 0, 1),
+    ],
+  };
+
+  assert.ok(resumeRefusal(graph, 'merge', pinned('left')));
+  assert.equal(resumeRefusal(graph, 'merge', pinned('left', 'right')), null);
 });

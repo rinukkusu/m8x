@@ -6,6 +6,7 @@ import {
   getNodeDescriptor,
   pinRefusal,
   resolveOutputs,
+  resumeRefusal,
   validateGraph,
   type Graph,
   type GraphEdge,
@@ -347,27 +348,6 @@ function EditorInner({
     });
   }
 
-  /**
-   * Why this node cannot start a run, or null when it can.
-   *
-   * Every node feeding it has to be pinned. Without that it gathers input from
-   * nodes that were skipped and never produced anything, and the run does
-   * nothing while looking like it worked.
-   */
-  function runFromHereRefusal(nodeId: string): string | null {
-    const feeding = edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source);
-    if (feeding.length === 0) {
-      return 'Nothing feeds this node, so a run from here is the same as a run from the top.';
-    }
-
-    const unpinned = feeding.filter((id) => !pinnedIds.has(id));
-    if (unpinned.length === 0) return null;
-
-    const names = unpinned
-      .map((id) => nodes.find((candidate) => candidate.id === id)?.data.node.name ?? id)
-      .join(', ');
-    return `Pin ${names} first — a run from here takes this node's input from the pins above it.`;
-  }
 
   function toggleActive() {
     startTransition(async () => {
@@ -525,7 +505,7 @@ function EditorInner({
                 onPin: (nodeRunId) => pinNode(selected.id, nodeRunId),
                 onUnpin: () => unpinNode(selected.id),
               },
-              runFromHereRefusal: runFromHereRefusal(selected.id),
+              runFromHereRefusal: resumeRefusal(graph, selected.id, pinnedIds),
               onRunFromHere: () => startRun(selected.id),
             }}
             onChange={(patch) => patchNode(selected.id, patch)}
