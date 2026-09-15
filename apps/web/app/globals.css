@@ -82,6 +82,19 @@ body {
   display: none;
 }
 
+/*
+ * A connection handle is 10px of paint, which is a quarter of a fingertip.
+ * Growing the dot would clutter the canvas for everyone, so only the hit area
+ * grows, and only where the pointer is a finger.
+ */
+@media (pointer: coarse) {
+  .react-flow__handle::before {
+    content: '';
+    position: absolute;
+    inset: -0.625rem;
+  }
+}
+
 .react-flow__controls-button {
   background: var(--color-surface-2);
   border-color: var(--color-line);

@@ -41,6 +41,7 @@ import {
   Power,
   Save,
   Wand2,
+  X,
 } from 'lucide-react';
 import * as icons from 'lucide-react';
 import Link from 'next/link';
@@ -64,6 +65,27 @@ import { Inspector, type InspectorResults } from './inspector';
 import type { CredentialOption, DatatableOption } from './param-field';
 
 const nodeTypes = { m8x: CanvasNodeView };
+
+/**
+ * Whether the thing pointing at the screen is a finger.
+ *
+ * Width is the wrong question here — a touchscreen laptop is wide and still
+ * has no precision to offer. Resolved after mount so the server and the client
+ * agree on the first paint.
+ */
+function useCoarsePointer(): boolean {
+  const [coarse, setCoarse] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia('(pointer: coarse)');
+    setCoarse(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setCoarse(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  return coarse;
+}
 
 export interface EditorWorkflow {
   id: string;
@@ -122,6 +144,7 @@ function EditorInner({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [run, setRun] = useState<RunStateView | null>(null);
   const [pending, startTransition] = useTransition();
+  const coarsePointer = useCoarsePointer();
 
   const graph = useMemo(() => toGraph(nodes, edges), [nodes, edges]);
   const pinnedIds = useMemo(() => new Set(pins.map((entry) => entry.nodeId)), [pins]);
@@ -568,6 +591,7 @@ function EditorInner({
             onPaneClick={() => setSelectedId(null)}
             nodeTypes={nodeTypes}
             defaultEdgeOptions={{ type: 'smoothstep' }}
+            connectionRadius={coarsePointer ? 44 : 20}
             fitView
             proOptions={{ hideAttribution: true }}
             deleteKeyCode={['Backspace', 'Delete']}
@@ -578,7 +602,9 @@ function EditorInner({
             <Controls showInteractive={false} className="!hidden md:!flex" />
           </ReactFlow>
 
-          {paletteOpen ? <Palette onPick={addNode} onClose={() => setPaletteOpen(false)} /> : null}
+          {paletteOpen ? (
+            <Palette onPick={addNode} onClose={() => setPaletteOpen(false)} autoFocus={!coarsePointer} />
+          ) : null}
         </div>
 
         {selected ? (
@@ -681,7 +707,16 @@ function OverflowMenu({
   );
 }
 
-function Palette({ onPick, onClose }: { onPick: (definition: NodeDescriptor) => void; onClose: () => void }) {
+function Palette({
+  onPick,
+  onClose,
+  autoFocus,
+}: {
+  onPick: (definition: NodeDescriptor) => void;
+  onClose: () => void;
+  /** Off on a phone: the keyboard would cover the list before it was read. */
+  autoFocus: boolean;
+}) {
   const [query, setQuery] = useState('');
 
   const groups = useMemo(() => {
@@ -699,20 +734,35 @@ function Palette({ onPick, onClose }: { onPick: (definition: NodeDescriptor) => 
   }, [query]);
 
   return (
-    <div className="absolute inset-0 z-10 flex items-start justify-center bg-surface-0/70 pt-20" onClick={onClose}>
+    <div
+      className="absolute inset-0 z-10 flex items-stretch justify-center bg-surface-0/70 md:items-start md:pt-20"
+      onClick={onClose}
+    >
       <div
-        className="card w-full max-w-md overflow-hidden shadow-2xl"
+        className="card flex w-full flex-col overflow-hidden rounded-none shadow-2xl md:h-auto md:max-w-md md:rounded-xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <input
-          autoFocus
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search nodes"
-          className="w-full border-b border-line bg-transparent px-4 py-3 text-sm text-ink placeholder:text-ink-faint focus:outline-none"
-        />
+        <div className="flex items-center border-b border-line pr-2">
+          <input
+            autoFocus={autoFocus}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search nodes"
+            className="min-w-0 flex-1 bg-transparent px-4 py-3 text-base text-ink placeholder:text-ink-faint focus:outline-none md:text-sm"
+          />
+          {/* Tapping outside is the desktop way out, and there is no outside
+              left when the palette is the whole screen. */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className={cx(iconTarget, 'shrink-0 text-ink-faint hover:text-ink md:hidden')}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
 
-        <div className="max-h-96 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2 md:max-h-96 md:flex-none">
           {groups.map((entry) => (
             <div key={entry.group} className="mb-2">
               <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
