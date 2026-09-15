@@ -76,7 +76,39 @@ export default async function ExecutionsPage({
             />
           </div>
         ) : (
-          <table className="w-full text-sm">
+          <>
+            {/* Six columns do not fit a phone, and `overflow-x-auto` would put
+                a horizontal scroll inside a vertical one, which is how you lose
+                the row you were reading. Below `md` each run is a card. */}
+            <ul className="divide-y divide-line/60 md:hidden">
+              {executions.map((execution) => (
+                <li key={execution.id}>
+                  <Link href={`/executions/${execution.id}`} className="block px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <StatusDot tone={execution.status as StatusTone} />
+                      <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                        {execution.workflow.name}
+                      </span>
+                      <Badge tone={execution.status as StatusTone}>{execution.status}</Badge>
+                    </div>
+
+                    <div className="mt-1 pl-3.5 text-xs text-ink-faint">
+                      {formatRelative(execution.queuedAt)} · {formatDuration(execution.durationMs)} ·{' '}
+                      {execution.trigger}
+                    </div>
+
+                    {execution.errorMessage ? (
+                      <p className="mt-1 line-clamp-2 pl-3.5 text-xs text-bad">
+                        {execution.errorNodeName ? `${execution.errorNodeName}: ` : ''}
+                        {execution.errorMessage}
+                      </p>
+                    ) : null}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+
+            <table className="hidden w-full text-sm md:table">
             <thead className="sticky top-0 bg-surface-1 text-left text-xs text-ink-faint">
               <tr className="border-b border-line">
                 <th className="px-6 py-2 font-medium">Workflow</th>
@@ -122,23 +154,24 @@ export default async function ExecutionsPage({
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </>
         )}
       </div>
 
       {pageCount > 1 ? (
-        <div className="flex items-center justify-between border-t border-line px-6 py-2 text-xs text-ink-faint">
+        <div className="flex items-center justify-between border-t border-line px-4 py-2 text-xs text-ink-faint md:px-6">
           <span>
             Page {page} of {pageCount}
           </span>
           <div className="flex gap-2">
             {page > 1 ? (
-              <Link href={pageHref(filters, page - 1)} className="hover:text-ink">
+              <Link href={pageHref(filters, page - 1)} className="px-2 py-2.5 hover:text-ink">
                 Previous
               </Link>
             ) : null}
             {page < pageCount ? (
-              <Link href={pageHref(filters, page + 1)} className="hover:text-ink">
+              <Link href={pageHref(filters, page + 1)} className="px-2 py-2.5 hover:text-ink">
                 Next
               </Link>
             ) : null}

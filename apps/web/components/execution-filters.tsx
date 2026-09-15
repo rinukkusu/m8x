@@ -29,11 +29,11 @@ export function ExecutionFilters({ workflows }: { workflows: Array<{ id: string;
   const active = ['status', 'workflow', 'since', 'fingerprint'].filter((key) => params.get(key));
 
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-line px-6 py-2.5">
+    <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5 md:px-6">
       <Select
         value={params.get('status') ?? 'all'}
         onChange={(event) => set('status', event.target.value)}
-        className="h-8 w-auto text-xs"
+        className="h-11 w-auto text-sm md:h-8 md:text-xs"
       >
         <option value="all">Any status</option>
         <option value="failed">Failed</option>
@@ -46,7 +46,7 @@ export function ExecutionFilters({ workflows }: { workflows: Array<{ id: string;
       <Select
         value={params.get('workflow') ?? ''}
         onChange={(event) => set('workflow', event.target.value)}
-        className="h-8 w-auto max-w-56 text-xs"
+        className="h-11 w-auto max-w-56 text-sm md:h-8 md:text-xs"
       >
         <option value="">Any workflow</option>
         {workflows.map((workflow) => (
@@ -59,7 +59,7 @@ export function ExecutionFilters({ workflows }: { workflows: Array<{ id: string;
       <Select
         value={params.get('since') ?? ''}
         onChange={(event) => set('since', event.target.value)}
-        className="h-8 w-auto text-xs"
+        className="h-11 w-auto text-sm md:h-8 md:text-xs"
       >
         <option value="">Any time</option>
         <option value="1">Last hour</option>
