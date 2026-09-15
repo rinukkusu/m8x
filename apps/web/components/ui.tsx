@@ -57,6 +57,13 @@ export function Button({
  */
 export const iconTarget = 'inline-flex size-11 items-center justify-center rounded-md md:size-auto';
 
+/**
+ * The same, for a control in a narrow column. 44px of height with less width
+ * is a compromise, and it is the right one where a full square would leave a
+ * folder name forty pixels to live in.
+ */
+export const iconTargetTight = 'inline-flex h-11 w-8 items-center justify-center rounded-md md:size-auto';
+
 export function Input({ className, ...props }: ComponentProps<'input'>) {
   return (
     <input

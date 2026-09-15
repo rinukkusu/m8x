@@ -30,7 +30,16 @@ import {
   renameFolderAction,
   renameWorkflowAction,
 } from '@/app/actions/workflows';
-import { Badge, Button, EmptyState, PageHeader, cx, formatRelative, iconTarget, type StatusTone } from './ui';
+import {
+  Badge,
+  Button,
+  EmptyState,
+  PageHeader,
+  cx,
+  formatRelative,
+  iconTargetTight,
+  type StatusTone,
+} from './ui';
 
 export interface WorkflowRow {
   id: string;
@@ -159,7 +168,7 @@ export function WorkflowBrowser({
       ) : null}
 
       <div className="flex min-h-0 flex-1">
-        <div className="w-40 shrink-0 overflow-y-auto border-r border-line p-2 md:w-60">
+        <div className="w-52 shrink-0 overflow-y-auto border-r border-line p-2 md:w-60">
           <FolderRow
             label="Unfiled"
             icon={Inbox}
@@ -396,7 +405,7 @@ function FolderRow({
             event.stopPropagation();
             onToggle?.();
           }}
-          className={cx(iconTarget, 'shrink-0 text-ink-faint hover:text-ink')}
+          className={cx(iconTargetTight, 'shrink-0 text-ink-faint hover:text-ink')}
         >
           {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         </button>
@@ -564,7 +573,7 @@ function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
         aria-haspopup="menu"
         aria-expanded={open}
         className={cx(
-          iconTarget,
+          iconTargetTight,
           'text-ink-faint transition-opacity hover:text-ink',
           // Hover-revealed is a desktop affordance. A touch device has no hover
           // state to reveal it with, so below `md` the trigger simply stays.
