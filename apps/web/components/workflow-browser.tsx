@@ -8,6 +8,7 @@ import {
   FolderPlus,
   Inbox,
   Copy,
+  FolderInput,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -48,6 +49,10 @@ const ROOT = '__root__';
  * Drag and drop uses the native HTML5 API rather than a library. The
  * interaction is one drag type onto one drop target, and a drag-and-drop
  * library would be more code than the feature.
+ *
+ * That API does not fire on touch at all, though — not degraded, absent — so
+ * every row also carries "Move to folder..." in its menu. That is the path;
+ * dragging is the accelerator for people who have a mouse to accelerate with.
  */
 export function WorkflowBrowser({
   tree,
@@ -62,8 +67,10 @@ export function WorkflowBrowser({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
+  const [moving, setMoving] = useState<MoveTarget | null>(null);
 
   const folderNames = useMemo(() => flattenNames(tree), [tree]);
+  const destinations = useMemo(() => flattenOptions(tree), [tree]);
   const selectedName = selectedFolderId ? folderNames.get(selectedFolderId) : null;
 
   const visible = useMemo(
@@ -182,13 +189,14 @@ export function WorkflowBrowser({
                 onDrop={handleDrop}
                 onRename={(id, name) => apply(() => renameFolderAction(id, name))}
                 onDelete={(id) => apply(() => deleteFolderAction(id), () => select(null))}
+                onMove={setMoving}
               />
             ))}
           </div>
 
           {tree.length === 0 ? (
             <p className="px-2 py-3 text-xs leading-relaxed text-ink-faint">
-              No folders yet. Create one, then drag workflows into it.
+              No folders yet. Create one, then move workflows into it from their menu.
             </p>
           ) : null}
         </div>
@@ -199,7 +207,7 @@ export function WorkflowBrowser({
               title="Nothing here yet"
               description={
                 selectedFolderId
-                  ? 'Drag a workflow onto this folder, or create one inside it.'
+                  ? 'Move a workflow into this folder from its menu, or create one inside it.'
                   : 'Create a workflow to get started. It opens on a canvas with a manual trigger ready to run.'
               }
               action={
@@ -224,6 +232,7 @@ export function WorkflowBrowser({
                 <li key={workflow.id}>
                   <WorkflowCard
                     workflow={workflow}
+                    onMove={() => setMoving({ kind: 'workflow', id: workflow.id, name: workflow.name })}
                     onRename={(name) => apply(() => renameWorkflowAction(workflow.id, name))}
                     onDuplicate={() => apply(() => duplicateWorkflowAction(workflow.id))}
                     onDelete={() => apply(() => deleteWorkflowAction(workflow.id))}
@@ -234,6 +243,22 @@ export function WorkflowBrowser({
           )}
         </div>
       </div>
+
+      {moving ? (
+        <MovePicker
+          target={moving}
+          destinations={destinations}
+          onClose={() => setMoving(null)}
+          onPick={(folderId) => {
+            setMoving(null);
+            apply(() =>
+              moving.kind === 'workflow'
+                ? moveWorkflowAction(moving.id, folderId)
+                : moveFolderAction(moving.id, folderId),
+            );
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -248,6 +273,7 @@ function FolderBranch({
   onDrop,
   onRename,
   onDelete,
+  onMove,
 }: {
   node: FolderNode;
   depth: number;
@@ -258,6 +284,7 @@ function FolderBranch({
   onDrop: (folderId: string | null, event: React.DragEvent) => void;
   onRename: (id: string, name: string) => void;
   onDelete: (id: string) => void;
+  onMove: (target: MoveTarget) => void;
 }) {
   const [open, setOpen] = useState(true);
   const hasChildren = node.children.length > 0;
@@ -290,6 +317,7 @@ function FolderBranch({
           const name = window.prompt('Rename folder', node.name);
           if (name) onRename(node.id, name);
         }}
+        onMove={() => onMove({ kind: 'folder', id: node.id, name: node.name, subtree: subtreeIds(node) })}
         onDelete={() => {
           if (window.confirm(`Delete "${node.name}"? Its workflows will move to Unfiled.`)) {
             onDelete(node.id);
@@ -311,6 +339,7 @@ function FolderBranch({
               onDrop={onDrop}
               onRename={onRename}
               onDelete={onDelete}
+              onMove={onMove}
             />
           ))}
         </div>
@@ -332,6 +361,7 @@ function FolderRow({
   onSelect,
   onRename,
   onDelete,
+  onMove,
   ...dragProps
 }: {
   label: string;
@@ -346,6 +376,7 @@ function FolderRow({
   onSelect: () => void;
   onRename?: () => void;
   onDelete?: () => void;
+  onMove?: () => void;
 } & React.HTMLAttributes<HTMLDivElement> & { draggable?: boolean }) {
   return (
     <div
@@ -386,6 +417,7 @@ function FolderRow({
             label={`Options for ${label}`}
             items={[
               { label: 'Rename', icon: Pencil, onSelect: onRename },
+              ...(onMove ? [{ label: 'Move to folder...', icon: FolderInput, onSelect: onMove }] : []),
               ...(onDelete ? [{ label: 'Delete', icon: Trash2, danger: true, onSelect: onDelete }] : []),
             ]}
           />
@@ -400,11 +432,13 @@ function WorkflowCard({
   onRename,
   onDuplicate,
   onDelete,
+  onMove,
 }: {
   workflow: WorkflowRow;
   onRename: (name: string) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onMove: () => void;
 }) {
   return (
     <div
@@ -442,6 +476,7 @@ function WorkflowCard({
               if (name) onRename(name);
             },
           },
+          { label: 'Move to folder...', icon: FolderInput, onSelect: onMove },
           { label: 'Duplicate', icon: Copy, onSelect: onDuplicate },
           {
             label: 'Delete',
@@ -569,6 +604,108 @@ function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
       ) : null}
     </div>
   );
+}
+
+/** What is being moved, and where it may not go. */
+interface MoveTarget {
+  kind: 'workflow' | 'folder';
+  id: string;
+  name: string;
+  /** A folder cannot be moved into itself or anything under it. */
+  subtree?: string[];
+}
+
+interface Destination {
+  id: string | null;
+  name: string;
+  depth: number;
+}
+
+/**
+ * Pick a folder.
+ *
+ * The flat list is the tree with its indentation kept, which is enough to tell
+ * two folders of the same name apart without making this a second tree widget.
+ */
+function MovePicker({
+  target,
+  destinations,
+  onPick,
+  onClose,
+}: {
+  target: MoveTarget;
+  destinations: Destination[];
+  onPick: (folderId: string | null) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  const blocked = new Set(target.subtree ?? []);
+  const options = destinations.filter((entry) => entry.id === null || !blocked.has(entry.id));
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-surface-0/70 p-0 sm:items-center sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="card flex max-h-[80dvh] w-full flex-col overflow-hidden rounded-b-none sm:max-w-sm sm:rounded-xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="border-b border-line px-4 py-3">
+          <p className="text-sm font-medium text-ink">Move {target.name}</p>
+          <p className="mt-0.5 text-xs text-ink-faint">Pick where it goes.</p>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+          {options.map((entry) => (
+            <button
+              key={entry.id ?? ROOT}
+              type="button"
+              onClick={() => onPick(entry.id)}
+              className="flex w-full items-center gap-2 rounded-md py-2.5 pr-3 text-left text-sm text-ink transition-colors hover:bg-surface-2"
+              style={{ paddingLeft: `${entry.depth * 14 + 12}px` }}
+            >
+              {entry.id === null ? (
+                <Inbox className="size-3.5 shrink-0 text-ink-faint" />
+              ) : (
+                <Folder className="size-3.5 shrink-0 text-ink-faint" />
+              )}
+              <span className="min-w-0 truncate">{entry.name}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="border-t border-line p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          <Button size="sm" className="w-full" onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The tree as a flat list, with Unfiled first because it is a destination too. */
+function flattenOptions(nodes: FolderNode[], depth = 0, into: Destination[] = []): Destination[] {
+  if (depth === 0) into.push({ id: null, name: 'Unfiled', depth: 0 });
+  for (const node of nodes) {
+    into.push({ id: node.id, name: node.name, depth });
+    flattenOptions(node.children, depth + 1, into);
+  }
+  return into;
+}
+
+function subtreeIds(node: FolderNode, into: string[] = []): string[] {
+  into.push(node.id);
+  for (const child of node.children) subtreeIds(child, into);
+  return into;
 }
 
 function flattenNames(nodes: FolderNode[], into = new Map<string, string>()): Map<string, string> {
