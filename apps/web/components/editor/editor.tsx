@@ -28,7 +28,20 @@ import {
   type Connection,
   type Edge,
 } from '@xyflow/react';
-import { AlertTriangle, ArrowLeft, Copy, ExternalLink, Pin, Play, Plus, Save, Wand2 } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Copy,
+  ExternalLink,
+  Maximize,
+  MoreHorizontal,
+  Pin,
+  Play,
+  Plus,
+  Power,
+  Save,
+  Wand2,
+} from 'lucide-react';
 import * as icons from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -410,75 +423,98 @@ function EditorInner({
 
   return (
     <>
-      <div className="flex items-center gap-3 border-b border-line px-4 py-2.5">
-        <Link
-          href="/workflows"
-          className={cx(iconTarget, '-ml-2 text-ink-faint transition-colors hover:text-ink')}
-          aria-label="Back"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-
-        <span className="min-w-0 truncate text-sm font-medium">{workflow.name}</span>
-
-        {dirty ? <Badge tone="neutral">unsaved</Badge> : null}
-
-        <Badge tone={workflow.active ? 'success' : 'neutral'}>{workflow.active ? 'active' : 'inactive'}</Badge>
-
-        {run ? (
-          <>
-            <Badge tone={run.status as StatusTone}>{run.status}</Badge>
-            <Link
-              href={`/executions/${run.id}`}
-              className="flex items-center gap-1 text-xs text-ink-faint transition-colors hover:text-ink"
-            >
-              open the full run
-              <ExternalLink className="size-3" />
-            </Link>
-          </>
-        ) : lastExecution ? (
+      {/* Two groups rather than one row, so the actions wrap below the name on
+          a narrow screen instead of pushing Run off the edge of it. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2.5">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <Link
-            href={`/executions/${lastExecution.id}`}
-            className="truncate text-xs text-ink-faint transition-colors hover:text-ink"
+            href="/workflows"
+            className={cx(iconTarget, '-ml-2 text-ink-faint transition-colors hover:text-ink')}
+            aria-label="Back"
           >
-            last run {lastExecution.status} {formatRelative(lastExecution.at)}
+            <ArrowLeft className="size-4" />
           </Link>
-        ) : null}
 
-        <div className="flex-1" />
+          <span className="min-w-0 truncate text-sm font-medium">{workflow.name}</span>
 
-        {message ? (
-          <span className={cx('text-xs', message.tone === 'ok' ? 'text-ok' : 'text-bad')}>{message.text}</span>
-        ) : null}
+          {dirty ? <Badge tone="neutral">unsaved</Badge> : null}
 
-        <Button size="sm" onClick={() => setPaletteOpen(true)} disabled={pending}>
-          <Plus className="size-3.5" />
-          Add node
-        </Button>
+          <Badge tone={workflow.active ? 'success' : 'neutral'}>{workflow.active ? 'active' : 'inactive'}</Badge>
 
-        <Button size="sm" onClick={tidy} disabled={pending || nodes.length === 0}>
-          <Wand2 className="size-3.5" />
-          Tidy up
-        </Button>
+          {run ? (
+            <>
+              <Badge tone={run.status as StatusTone}>{run.status}</Badge>
+              <Link
+                href={`/executions/${run.id}`}
+                className="hidden items-center gap-1 text-xs text-ink-faint transition-colors hover:text-ink md:flex"
+              >
+                open the full run
+                <ExternalLink className="size-3" />
+              </Link>
+            </>
+          ) : lastExecution ? (
+            <Link
+              href={`/executions/${lastExecution.id}`}
+              className="hidden truncate text-xs text-ink-faint transition-colors hover:text-ink md:block"
+            >
+              last run {lastExecution.status} {formatRelative(lastExecution.at)}
+            </Link>
+          ) : null}
 
-        <Button size="sm" onClick={() => save()} disabled={pending || !dirty}>
-          <Save className="size-3.5" />
-          Save
-        </Button>
+          {message ? (
+            <span className={cx('ml-auto truncate text-xs', message.tone === 'ok' ? 'text-ok' : 'text-bad')}>
+              {message.text}
+            </span>
+          ) : null}
+        </div>
 
-        <Button size="sm" onClick={duplicate} disabled={pending}>
-          <Copy className="size-3.5" />
-          Duplicate
-        </Button>
+        {/* Add node, Save and Run are what the toolbar is for. The rest is
+            occasional, and occasional things go behind the menu on a phone. */}
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => setPaletteOpen(true)} disabled={pending}>
+            <Plus className="size-3.5" />
+            Add node
+          </Button>
 
-        <Button size="sm" onClick={toggleActive} disabled={pending}>
-          {workflow.active ? 'Deactivate' : 'Activate'}
-        </Button>
+          <Button size="sm" onClick={tidy} disabled={pending || nodes.length === 0} className="hidden md:inline-flex">
+            <Wand2 className="size-3.5" />
+            Tidy up
+          </Button>
 
-        <Button size="sm" variant="primary" onClick={() => startRun()} disabled={pending || errors.length > 0}>
-          <Play className="size-3.5" />
-          Run
-        </Button>
+          <Button size="sm" onClick={() => save()} disabled={pending || !dirty}>
+            <Save className="size-3.5" />
+            Save
+          </Button>
+
+          <Button size="sm" onClick={duplicate} disabled={pending} className="hidden md:inline-flex">
+            <Copy className="size-3.5" />
+            Duplicate
+          </Button>
+
+          <Button size="sm" onClick={toggleActive} disabled={pending} className="hidden md:inline-flex">
+            {workflow.active ? 'Deactivate' : 'Activate'}
+          </Button>
+
+          <Button size="sm" variant="primary" onClick={() => startRun()} disabled={pending || errors.length > 0}>
+            <Play className="size-3.5" />
+            Run
+          </Button>
+
+          <OverflowMenu
+            className="md:hidden"
+            disabled={pending}
+            items={[
+              { label: 'Tidy up', icon: Wand2, onSelect: tidy, disabled: nodes.length === 0 },
+              { label: 'Fit view', icon: Maximize, onSelect: () => fitView({ padding: 0.2, duration: 300 }) },
+              { label: 'Duplicate', icon: Copy, onSelect: duplicate },
+              {
+                label: workflow.active ? 'Deactivate' : 'Activate',
+                icon: Power,
+                onSelect: toggleActive,
+              },
+            ]}
+          />
+        </div>
       </div>
 
       {errors.length > 0 ? (
@@ -537,11 +573,22 @@ function EditorInner({
             deleteKeyCode={['Backspace', 'Delete']}
           >
             <Background variant={BackgroundVariant.Dots} gap={18} size={1} color="#2a3040" />
-            <Controls showInteractive={false} />
+            {/* Bottom left is where the inspector sheet is, and pinch already
+                does everything here except fit the view. */}
+            <Controls showInteractive={false} className="!hidden md:!flex" />
           </ReactFlow>
 
           {paletteOpen ? <Palette onPick={addNode} onClose={() => setPaletteOpen(false)} /> : null}
         </div>
+
+        {selected ? (
+          <button
+            type="button"
+            aria-label="Close the panel"
+            onClick={() => setSelectedId(null)}
+            className="fixed inset-0 z-10 bg-surface-0/60 md:hidden"
+          />
+        ) : null}
 
         {selected ? (
           <Inspector
@@ -573,6 +620,64 @@ function EditorInner({
         ) : null}
       </div>
     </>
+  );
+}
+
+/**
+ * The toolbar actions that do not earn a button on a phone.
+ *
+ * Absolutely positioned under its trigger rather than portalled: the toolbar is
+ * the top of the page, so there is nothing for the menu to be clipped by.
+ */
+function OverflowMenu({
+  items,
+  disabled,
+  className,
+}: {
+  items: Array<{ label: string; icon: icons.LucideIcon; onSelect: () => void; disabled?: boolean }>;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className={cx('relative', className)}>
+      <Button size="sm" onClick={() => setOpen((value) => !value)} disabled={disabled} aria-label="More actions">
+        <MoreHorizontal className="size-4" />
+      </Button>
+
+      {open ? (
+        <>
+          <button
+            type="button"
+            aria-label="Close the menu"
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-40"
+          />
+          <div
+            role="menu"
+            className="absolute right-0 top-full z-50 mt-1 min-w-44 overflow-hidden rounded-lg border border-line bg-surface-1 py-1 shadow-lg"
+          >
+            {items.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                role="menuitem"
+                disabled={item.disabled}
+                onClick={() => {
+                  setOpen(false);
+                  item.onSelect();
+                }}
+                className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm text-ink transition-colors hover:bg-surface-2 disabled:opacity-45"
+              >
+                <item.icon className="size-4 shrink-0" />
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
+    </div>
   );
 }
 

@@ -29,6 +29,22 @@ export interface InspectorResults {
 type Tab = 'settings' | 'failure' | 'results';
 
 /**
+ * Where the panel lives.
+ *
+ * A 384px sidebar next to the canvas leaves nothing of a phone screen for the
+ * canvas, so below `md` the same panel is a sheet over the bottom of it: the
+ * node stays visible above, the panel scrolls on its own, and the canvas is
+ * still there when it closes. One component either way — a second panel for
+ * phones would be a second panel to keep correct.
+ */
+const PANEL_FRAME = [
+  'fixed inset-x-0 bottom-0 z-20 flex max-h-[85dvh] flex-col overflow-hidden',
+  'rounded-t-xl border-t border-line bg-surface-1 shadow-2xl',
+  'md:static md:z-auto md:max-h-none md:w-96 md:shrink-0',
+  'md:rounded-none md:border-t-0 md:border-l',
+].join(' ');
+
+/**
  * The right-hand panel.
  *
  * Its whole body comes from the node's parameter schema. The only hand-written
@@ -72,7 +88,7 @@ export function Inspector({
 
   if (!definition) {
     return (
-      <aside className="w-96 shrink-0 overflow-y-auto border-l border-line bg-surface-1 p-4">
+      <aside className={cx(PANEL_FRAME, 'p-4')}>
         <p className="text-sm text-bad">
           This node has type <code className="font-mono">{node.type}</code>, which this version of m8x does not know
           about.
@@ -84,7 +100,7 @@ export function Inspector({
   const visibleParams = definition.params.filter((schema) => isParamVisible(schema, node.params));
 
   return (
-    <aside className="flex w-96 shrink-0 flex-col overflow-hidden border-l border-line bg-surface-1">
+    <aside className={PANEL_FRAME}>
       <div className="flex items-start justify-between gap-2 border-b border-line px-4 py-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-ink">{definition.displayName}</p>
@@ -210,7 +226,7 @@ export function Inspector({
       </div>
       )}
 
-      <div className="flex gap-2 border-t border-line p-3">
+      <div className="flex gap-2 border-t border-line p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3">
         <Button size="sm" variant="secondary" onClick={onDuplicate} className="flex-1">
           <Copy className="size-3.5" />
           Duplicate
