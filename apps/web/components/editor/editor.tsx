@@ -45,7 +45,7 @@ import {
   type RunStateView,
 } from '@/app/actions/workflows';
 import type { NodeRunView } from '../node-run-panel';
-import { Badge, Button, cx, formatRelative, type StatusTone } from '../ui';
+import { Badge, Button, cx, formatRelative, iconTarget, type StatusTone } from '../ui';
 import { CanvasNodeView, type CanvasNode } from './canvas-node';
 import { Inspector, type InspectorResults } from './inspector';
 import type { CredentialOption, DatatableOption } from './param-field';
@@ -411,7 +411,11 @@ function EditorInner({
   return (
     <>
       <div className="flex items-center gap-3 border-b border-line px-4 py-2.5">
-        <Link href="/workflows" className="text-ink-faint transition-colors hover:text-ink" aria-label="Back">
+        <Link
+          href="/workflows"
+          className={cx(iconTarget, '-ml-2 text-ink-faint transition-colors hover:text-ink')}
+          aria-label="Back"
+        >
           <ArrowLeft className="size-4" />
         </Link>
 

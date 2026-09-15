@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 
-import { Button, cx } from './ui';
+import { Button, cx, iconTarget } from './ui';
 import { NavLink } from './nav-link';
 
 const NAV = [
@@ -111,7 +111,7 @@ export function AppShell({
           <button
             type="button"
             onClick={() => setDrawerOpen(false)}
-            className="text-ink-faint transition-colors hover:text-ink md:hidden"
+            className={cx(iconTarget, '-mr-2 text-ink-faint transition-colors hover:text-ink md:hidden')}
             aria-label="Close menu"
           >
             <X className="size-4" />
@@ -186,7 +186,7 @@ export function AppShell({
           <button
             type="button"
             onClick={() => setDrawerOpen(true)}
-            className="text-ink-muted transition-colors hover:text-ink"
+            className={cx(iconTarget, '-ml-2 text-ink-muted transition-colors hover:text-ink')}
             aria-label="Open menu"
           >
             <Menu className="size-5" />

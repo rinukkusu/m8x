@@ -16,9 +16,15 @@ const BUTTON_VARIANTS = {
   danger: 'bg-transparent text-bad hover:bg-bad/10 border-line',
 } as const;
 
+/**
+ * Heights are a thumb's business below `md` and a pointer's above it. 44px is
+ * the number both Apple and the WCAG target-size rule land on, and a 28px
+ * button is not a near miss on a phone — it is a button you hit by accident or
+ * not at all.
+ */
 const BUTTON_SIZES = {
-  sm: 'h-7 px-2.5 text-xs gap-1.5',
-  md: 'h-9 px-3.5 text-sm gap-2',
+  sm: 'h-11 px-3 text-xs gap-1.5 md:h-7 md:px-2.5',
+  md: 'h-11 px-4 text-sm gap-2 md:h-9 md:px-3.5',
 } as const;
 
 export function Button({
@@ -44,12 +50,20 @@ export function Button({
   );
 }
 
+/**
+ * The hit area for a bare icon control — a back arrow, a drawer toggle, a row
+ * menu. A 16px icon is a 16px target, and padding is the only thing standing
+ * between that and a miss. Desktop keeps the icon as it was.
+ */
+export const iconTarget = 'inline-flex size-11 items-center justify-center rounded-md md:size-auto';
+
 export function Input({ className, ...props }: ComponentProps<'input'>) {
   return (
     <input
       {...props}
       className={cx(
-        'h-9 w-full rounded-md border border-line bg-surface-0 px-2.5 text-sm text-ink',
+        'h-11 w-full rounded-md border border-line bg-surface-0 px-2.5 text-base text-ink',
+        'md:h-9 md:text-sm',
         'placeholder:text-ink-faint focus:border-accent focus:outline-none',
         className,
       )}
@@ -62,7 +76,7 @@ export function Textarea({ className, ...props }: ComponentProps<'textarea'>) {
     <textarea
       {...props}
       className={cx(
-        'w-full rounded-md border border-line bg-surface-0 px-2.5 py-2 text-sm text-ink',
+        'w-full rounded-md border border-line bg-surface-0 px-2.5 py-2 text-base text-ink md:text-sm',
         'placeholder:text-ink-faint focus:border-accent focus:outline-none font-mono',
         className,
       )}
@@ -75,7 +89,8 @@ export function Select({ className, ...props }: ComponentProps<'select'>) {
     <select
       {...props}
       className={cx(
-        'h-9 w-full rounded-md border border-line bg-surface-0 px-2 text-sm text-ink',
+        'h-11 w-full rounded-md border border-line bg-surface-0 px-2 text-base text-ink',
+        'md:h-9 md:text-sm',
         'focus:border-accent focus:outline-none',
         className,
       )}

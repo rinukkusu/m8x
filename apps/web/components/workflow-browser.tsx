@@ -29,7 +29,7 @@ import {
   renameFolderAction,
   renameWorkflowAction,
 } from '@/app/actions/workflows';
-import { Badge, Button, EmptyState, PageHeader, cx, formatRelative, type StatusTone } from './ui';
+import { Badge, Button, EmptyState, PageHeader, cx, formatRelative, iconTarget, type StatusTone } from './ui';
 
 export interface WorkflowRow {
   id: string;
@@ -365,7 +365,7 @@ function FolderRow({
             event.stopPropagation();
             onToggle?.();
           }}
-          className="shrink-0 text-ink-faint hover:text-ink"
+          className={cx(iconTarget, 'shrink-0 text-ink-faint hover:text-ink')}
         >
           {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
         </button>
@@ -529,10 +529,13 @@ function RowMenu({ label, items }: { label: string; items: MenuItem[] }) {
         aria-haspopup="menu"
         aria-expanded={open}
         className={cx(
+          iconTarget,
           'text-ink-faint transition-opacity hover:text-ink',
-          // Always visible once open, or the menu would hang under nothing the
-          // moment the pointer left the row.
-          open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+          // Hover-revealed is a desktop affordance. A touch device has no hover
+          // state to reveal it with, so below `md` the trigger simply stays.
+          // Always visible once open too, or the menu would hang under nothing
+          // the moment the pointer left the row.
+          open ? 'opacity-100' : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100',
         )}
       >
         <MoreHorizontal className="size-4" />
